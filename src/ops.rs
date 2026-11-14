@@ -112,7 +112,7 @@ pub enum Operator {
     Conv, Gemm, MatMul, MaxPool,
     AveragePool, Sigmoid, Flatten, Transpose,
     Softmax, Add, Sub, Mul, Div, 
-    Concat, SoftPlus, ReduceMean, Tanh,
+    Concat, SoftPlus, ReduceMean, Tanh, Resize, LeakyRelu,
 
 }
 
@@ -133,7 +133,7 @@ impl Operator {
             Operator::Conv => "Conv", Operator::Gemm => "Gemm", Operator::MatMul => "MatMul", Operator::MaxPool => "MaxPool",
             Operator::AveragePool => "AveragePool", Operator::Sigmoid => "Sigmoid", Operator::Flatten => "Flatten", Operator::Transpose => "Transpose",
             Operator::Softmax => "Softmax", Operator::Add => "Add", Operator::Sub => "Sub", Operator::Mul => "Mul", Operator::Div => "Div",
-            Operator::Concat => "Concat", Operator::SoftPlus => "Softplus", Operator::ReduceMean => "ReduceMean", Operator::Tanh => "Tanh"
+            Operator::Concat => "Concat", Operator::SoftPlus => "Softplus", Operator::ReduceMean => "ReduceMean", Operator::Tanh => "Tanh", Operator::Resize => "Resize", Operator::LeakyRelu => "LeakyRelu",
         }
     }
 
@@ -145,7 +145,7 @@ impl Operator {
             "Conv" => Operator::Conv, "Gemm" => Operator::Gemm, "MatMul" => Operator::MatMul, "MaxPool" => Operator::MaxPool,
             "AveragePool" => Operator::AveragePool, "Sigmoid" => Operator::Sigmoid, "Flatten" => Operator::Flatten, "Transpose" => Operator::Transpose,
             "Softmax" => Operator::Softmax, "Add" => Operator::Add, "Sub" => Operator::Sub, "Mul" => Operator::Mul, "Div" => Operator::Div,
-            "Concat" => Operator::Concat, "Softplus" => Operator::SoftPlus, "ReduceMean" => Operator::ReduceMean, "Tanh" => Operator::Tanh,
+            "Concat" => Operator::Concat, "Softplus" => Operator::SoftPlus, "ReduceMean" => Operator::ReduceMean, "Tanh" => Operator::Tanh, "Resize" => Operator::Resize, "LeakyRelu" => Operator::LeakyRelu,
             _ => return None,
         };
         Some(op)
@@ -312,6 +312,29 @@ impl Operator {
                 arity_in: (1, 1),
                 arity_out: (1, 1),
                 attrs: &[],
+            },
+            Operator::Resize => OperatorSpec {
+                min_opset: 11,
+                arity_in: (1, 4), // X, roi, scales, sizes
+                arity_out: (1, 1),
+                attrs: &[
+                    ("mode", AttributesDataKind::Str),
+                    ("nearest_mode", AttributesDataKind::Str),
+                    ("coordinate_transformation_mode", AttributesDataKind::Str),
+                    ("keep_aspect_ratio_policy", AttributesDataKind::Str),
+                    ("antialias", AttributesDataKind::I64),
+                    ("exclude_outside", AttributesDataKind::I64),
+                    ("extrapolation_value", AttributesDataKind::F32),
+                    ("cubic_coeff_a", AttributesDataKind::F32),
+                    ("cubic_coeff_b", AttributesDataKind::F32),
+                    ("cubic_coeff_c", AttributesDataKind::F32),
+                ],
+            },
+            Operator::LeakyRelu => OperatorSpec {
+                min_opset: 13,
+                arity_in: (1, 1),
+                arity_out: (1, 1),
+                attrs: &[("alpha", AttributesDataKind::F32)],
             },
         }
     }

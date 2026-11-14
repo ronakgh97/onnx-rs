@@ -12,8 +12,8 @@ use std::time::Instant;
 
 fn main() -> Result<()> {
     // input image must be 128x128
-    let in_image = image::open("images/sample_1.png")?.to_rgb8();
-    let model_path = "models/srgan_onnx/srgan_single.onnx";
+    let in_image = image::open("images/sample_2.png")?.to_rgb8();
+    let model_path = "models/srgan_onnx-float/srgan_single.onnx";
 
     println!("running onnx_rs... ");
     let start = Instant::now();

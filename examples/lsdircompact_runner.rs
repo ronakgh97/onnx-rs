@@ -12,8 +12,8 @@ use std::time::Instant;
 
 fn main() -> Result<()> {
     // input image must be 128x128
-    let in_image = image::open("images/sample_2.png")?.to_rgb8();
-    let model_path = "models/4xPurePhoto-Span.onnx";
+    let in_image = image::open("images/sample_3.png")?.to_rgb8();
+    let model_path = "models/4xLSDIRCompactv2.onnx";
 
     println!("running onnx_rs... ");
     let start = Instant::now();
@@ -24,7 +24,7 @@ fn main() -> Result<()> {
 
     let input = Tensor::create("inputs", &[1, 3, 128, 128], data)?;
     let output = model.run_single(input)?;
-    save_image_from_tensor(output.data(), "images/purephoto_span_onnx_rs_x4.png")?;
+    save_image_from_tensor(output.data(), "images/lsdircompact_onnx_rs_x4.png")?;
     println!("done in : {:?}", start.elapsed());
 
     // ---
@@ -43,12 +43,12 @@ fn main() -> Result<()> {
     let input = TensorRef::from_array_view(([1, 3, 128, 128], data.as_ref()))?;
     let output = session.run(inputs!["image" => input])?;
     let (_, output) = output["output"].try_extract_tensor::<f32>()?;
-    save_image_from_tensor(output, "images/purephoto_span_ort_x4.png")?;
+    save_image_from_tensor(output, "images/lsdircompact_ort_x4.png")?;
     println!("done in : {:?}", start.elapsed());
 
     assert_pixel_diff_within_tolerance(
-        &image::open("images/purephoto_span_onnx_rs_x4.png")?.to_rgb8(),
-        &image::open("images/purephoto_span_ort_x4.png")?.to_rgb8(),
+        &image::open("images/lsdircompact_onnx_rs_x4.png")?.to_rgb8(),
+        &image::open("images/lsdircompact_ort_x4.png")?.to_rgb8(),
         1,
     )?;
 

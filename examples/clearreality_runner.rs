@@ -12,7 +12,7 @@ use std::time::Instant;
 
 fn main() -> Result<()> {
     // input image must be 128x128
-    let in_image = image::open("images/sample_3.png")?.to_rgb8();
+    let in_image = image::open("images/sample_4.png")?.to_rgb8();
     let model_path = "models/4xClearRealityV1.onnx";
 
     println!("running onnx_rs... ");

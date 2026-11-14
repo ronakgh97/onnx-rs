@@ -1,6 +1,7 @@
 //! Kernel implementations for ONNX operators.
 use crate::ops::{
-    AttributesDataValue, Operator, take_attr_i64, take_attr_i64s, take_attr_i64s_n, take_attr_str,
+    AttributesDataValue, Operator, take_attr_f32, take_attr_i64, take_attr_i64s, take_attr_i64s_n,
+    take_attr_str,
 };
 use crate::tensor::{Tensor, take_tensor};
 use anyhow::{Result, anyhow};
@@ -52,6 +53,8 @@ impl Operator {
             Operator::Concat => Ok(vec![concat(output_names[0], inputs, attrs)?]),
             Operator::SoftPlus => Ok(vec![softplus(output_names[0], inputs)?]),
             Operator::Tanh => Ok(vec![tanh(output_names[0], inputs)?]),
+            Operator::Resize => Ok(vec![resize(output_names[0], inputs, attrs)?]),
+            Operator::LeakyRelu => Ok(vec![leaky_relu(output_names[0], inputs, attrs)?]),
             _ => Err(anyhow!(
                 "operator '{:?}' has no kernel implemented yet",
                 self
@@ -200,6 +203,87 @@ fn relu(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
         // scalar path
         for (&v, out) in x.data.iter().zip(data.iter_mut()) {
             *out = v.max(0.0);
+        }
+    }
+
+    Tensor::create(output, &x.dims, data)
+}
+
+#[inline]
+fn leaky_relu(
+    output: &str,
+    inputs: &[Option<&Tensor>],
+    attrs: &[(String, AttributesDataValue)],
+) -> Result<Tensor> {
+    let x = take_tensor(inputs, 0, "LeakyRelu")?;
+    let alpha = take_attr_f32(attrs, "alpha")?.copied().unwrap_or(0.01);
+    if !alpha.is_finite() {
+        return Err(anyhow!("LeakyRelu: alpha must be finite, got {alpha}"));
+    }
+
+    // f(x) = alpha * x for x < 0, x otherwise
+    let mut data = vec![0f32; x.data.len()];
+    if x.data.is_empty() {
+        return Tensor::create(output, &x.dims, data);
+    }
+
+    if data.len() >= 8 {
+        // simd path
+        unsafe {
+            let zero = _mm256_setzero_ps();
+            let va = _mm256_set1_ps(alpha);
+
+            // unroll by 4 ymm per iteration, same skeleton as `relu`
+            let (input_chunk32, input_rem32) = x.data.as_chunks::<32>();
+            let (output_chunk32, output_rem32) = data.as_chunks_mut::<32>();
+
+            for (input, output) in input_chunk32.iter().zip(output_chunk32.iter_mut()) {
+                let v0 = _mm256_loadu_ps(input.as_ptr());
+                let v1 = _mm256_loadu_ps(input.as_ptr().add(8));
+                let v2 = _mm256_loadu_ps(input.as_ptr().add(16));
+                let v3 = _mm256_loadu_ps(input.as_ptr().add(24));
+
+                let a0 = _mm256_mul_ps(v0, va);
+                let a1 = _mm256_mul_ps(v1, va);
+                let a2 = _mm256_mul_ps(v2, va);
+                let a3 = _mm256_mul_ps(v3, va);
+
+                // blendv(a, b, mask): lane from b where mask set, from a where clear
+                let m0 = _mm256_cmp_ps(v0, zero, _CMP_LT_OQ);
+                let m1 = _mm256_cmp_ps(v1, zero, _CMP_LT_OQ);
+                let m2 = _mm256_cmp_ps(v2, zero, _CMP_LT_OQ);
+                let m3 = _mm256_cmp_ps(v3, zero, _CMP_LT_OQ);
+
+                let v0 = _mm256_blendv_ps(v0, a0, m0);
+                let v1 = _mm256_blendv_ps(v1, a1, m1);
+                let v2 = _mm256_blendv_ps(v2, a2, m2);
+                let v3 = _mm256_blendv_ps(v3, a3, m3);
+
+                _mm256_storeu_ps(output.as_mut_ptr(), v0);
+                _mm256_storeu_ps(output.as_mut_ptr().add(8), v1);
+                _mm256_storeu_ps(output.as_mut_ptr().add(16), v2);
+                _mm256_storeu_ps(output.as_mut_ptr().add(24), v3);
+            }
+
+            // simd tail (< 32 floats)
+            let (input_chunk8, input_rem8) = input_rem32.as_chunks::<8>();
+            let (output_chunk8, output_rem8) = output_rem32.as_chunks_mut::<8>();
+            for (input, output) in input_chunk8.iter().zip(output_chunk8.iter_mut()) {
+                let v = _mm256_loadu_ps(input.as_ptr());
+                let a = _mm256_mul_ps(v, va);
+                let m = _mm256_cmp_ps(v, zero, _CMP_LT_OQ);
+                _mm256_storeu_ps(output.as_mut_ptr(), _mm256_blendv_ps(v, a, m));
+            }
+
+            // scalar (< 8 floats)
+            for (&v, out) in input_rem8.iter().zip(output_rem8.iter_mut()) {
+                *out = if v < 0.0 { alpha * v } else { v };
+            }
+        }
+    } else {
+        // scalar path
+        for (&v, out) in x.data.iter().zip(data.iter_mut()) {
+            *out = if v < 0.0 { alpha * v } else { v };
         }
     }
 
@@ -1315,6 +1399,164 @@ fn tanh(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
     }
 
     Tensor::create(output, &x.dims, data)
+}
+
+// TODO: resize has few caveats, for i64 tensor blocker
+fn resize(
+    output: &str,
+    inputs: &[Option<&Tensor>],
+    attrs: &[(String, AttributesDataValue)],
+) -> Result<Tensor> {
+    let x = take_tensor(inputs, 0, "Resize")?;
+    let dims = &x.dims;
+    if dims.len() != 4 {
+        return Err(anyhow!(
+            "Resize: wants rank-4 NCHW, got rank {}",
+            dims.len()
+        ));
+    }
+    if dims.iter().any(|&d| d <= 0) {
+        return Err(anyhow!("Resize: all input dims must be > 0, got {dims:?}"));
+    }
+
+    // roi (input 1) is only consumed by tf_crop_and_resize, which we reject below
+    if inputs.get(1).copied().flatten().is_some() {
+        return Err(anyhow!("Resize: roi (input 1) is not supported"));
+    }
+    // sizes (input 3) carries int64 data, which the runtime cannot hold yet
+    if inputs.get(3).copied().flatten().is_some() {
+        return Err(anyhow!(
+            "Resize: sizes (input 3) is not supported, use scales"
+        ));
+    }
+    let scales_t = inputs.get(2).copied().flatten().ok_or_else(|| {
+        anyhow!("Resize: exactly one of scales or sizes must be provided, got neither")
+    })?;
+    if scales_t.data.len() != 4 {
+        return Err(anyhow!(
+            "Resize: scales must have one value per input dim (4), got {}",
+            scales_t.data.len()
+        ));
+    }
+
+    // attributes, resolved with their ONNX defaults
+    let mode = take_attr_str(attrs, "mode")?.unwrap_or("nearest");
+    if mode != "nearest" {
+        return Err(anyhow!(
+            "Resize: mode '{mode}' is not supported, only 'nearest'"
+        ));
+    }
+    let coord_mode =
+        take_attr_str(attrs, "coordinate_transformation_mode")?.unwrap_or("half_pixel");
+    if coord_mode != "asymmetric" {
+        return Err(anyhow!(
+            "Resize: coordinate_transformation_mode '{coord_mode}' is not supported, only 'asymmetric'"
+        ));
+    }
+    let nearest_mode = take_attr_str(attrs, "nearest_mode")?.unwrap_or("round_prefer_floor");
+    if nearest_mode != "floor" {
+        return Err(anyhow!(
+            "Resize: nearest_mode '{nearest_mode}' is not supported, only 'floor'"
+        ));
+    }
+    let keep_policy = take_attr_str(attrs, "keep_aspect_ratio_policy")?.unwrap_or("stretch");
+    if keep_policy != "stretch" {
+        return Err(anyhow!(
+            "Resize: keep_aspect_ratio_policy '{keep_policy}' is not supported, only 'stretch'"
+        ));
+    }
+
+    // these are no-ops for the nearest/asymmetric/floor config above, but a
+    // non-default value would silently change semantics, so reject instead
+    let antialias = take_attr_i64(attrs, "antialias")?.copied().unwrap_or(0);
+    if antialias != 0 {
+        return Err(anyhow!("Resize: antialias={antialias} is not supported"));
+    }
+    let exclude_outside = take_attr_i64(attrs, "exclude_outside")?
+        .copied()
+        .unwrap_or(0);
+    if exclude_outside != 0 {
+        return Err(anyhow!(
+            "Resize: exclude_outside={exclude_outside} is not supported"
+        ));
+    }
+    let extrap = take_attr_f32(attrs, "extrapolation_value")?
+        .copied()
+        .unwrap_or(0.0);
+    if extrap != 0.0 {
+        return Err(anyhow!(
+            "Resize: extrapolation_value={extrap} is not supported"
+        ));
+    }
+
+    // output dims = floor(in_dim * scale), same float precision as ORT uses
+    let mut out_dims = [0i64; 4];
+    let mut scales = [0f32; 4];
+    for (i, &s) in scales_t.data.iter().enumerate() {
+        if !s.is_finite() || s <= 0.0 {
+            return Err(anyhow!(
+                "Resize: scales[{i}] must be finite and > 0, got {s}"
+            ));
+        }
+        scales[i] = s;
+        out_dims[i] = (dims[i] as f32 * s).floor() as i64;
+        if out_dims[i] <= 0 {
+            return Err(anyhow!(
+                "Resize: scales[{i}]={s} would collapse input dim {} to {}",
+                dims[i],
+                out_dims[i]
+            ));
+        }
+    }
+    let [n_out, c_out, h_out, w_out] = [
+        out_dims[0] as usize,
+        out_dims[1] as usize,
+        out_dims[2] as usize,
+        out_dims[3] as usize,
+    ];
+    let [n_in, c_in, h_in, w_in] = [
+        dims[0] as usize,
+        dims[1] as usize,
+        dims[2] as usize,
+        dims[3] as usize,
+    ];
+
+    // asymmetric + floor source index per output position; the clamp guards
+    // against fp rounding pushing the coordinate marginally out of bounds
+    let src_index = |out_idx: usize, scale: f32, in_len: usize| -> usize {
+        ((out_idx as f32 / scale).floor() as i64).clamp(0, in_len as i64 - 1) as usize
+    };
+    let map_n: Vec<usize> = (0..n_out).map(|y| src_index(y, scales[0], n_in)).collect();
+    let map_c: Vec<usize> = (0..c_out).map(|y| src_index(y, scales[1], c_in)).collect();
+    let map_h: Vec<usize> = (0..h_out).map(|y| src_index(y, scales[2], h_in)).collect();
+    let map_w: Vec<usize> = (0..w_out).map(|y| src_index(y, scales[3], w_in)).collect();
+
+    let numel = n_out
+        .checked_mul(c_out)
+        .and_then(|v| v.checked_mul(h_out))
+        .and_then(|v| v.checked_mul(w_out))
+        .ok_or_else(|| anyhow!("Resize: output dims {out_dims:?} overflow element count"))?;
+    let mut out_data = vec![0f32; numel];
+
+    // for each output row, the source row is fixed: gather source pixels per
+    // output column. rows are contiguous and consecutive output rows mostly
+    // alias the same source row, so this stays L1/L2 friendly
+    for on in 0..n_out {
+        let n_base = map_n[on] * c_in * h_in * w_in;
+        for oc in 0..c_out {
+            let nc_base = n_base + map_c[oc] * h_in * w_in;
+            for oy in 0..h_out {
+                let row_base = nc_base + map_h[oy] * w_in;
+                let src_row = &x.data[row_base..row_base + w_in];
+                let dst_row = &mut out_data[((on * c_out + oc) * h_out + oy) * w_out..][..w_out];
+                for (ox, dst) in dst_row.iter_mut().enumerate() {
+                    *dst = src_row[map_w[ox]];
+                }
+            }
+        }
+    }
+
+    Tensor::create(output, &out_dims, out_data)
 }
 
 #[inline(always)]
