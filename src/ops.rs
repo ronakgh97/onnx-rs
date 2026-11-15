@@ -108,44 +108,60 @@ pub fn take_attr_i64s_n<const N: usize>(
 #[rustfmt::skip]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Operator {
-    Clip, Relu, PRelu,  DepthToSpace,
-    Conv, Gemm, MatMul, MaxPool,
-    AveragePool, Sigmoid, Flatten, Transpose,
-    Softmax, Add, Sub, Mul, Div, 
-    Concat, SoftPlus, ReduceMean, Tanh, Resize, LeakyRelu,
+    Clip, Relu, LeakyRelu, PRelu, DepthToSpace,
+    Conv, Add, Sub, Mul, Div,
+    Sigmoid, Concat, SoftPlus, Tanh, Resize,
 
 }
 
 #[derive(Clone, Copy, Debug)]
 pub struct OperatorSpec {
     pub min_opset: i64,
-    pub arity_in: (usize, usize),  // (min..max)
-    pub arity_out: (usize, usize), // (min..max)
+    pub arity_in: (usize, usize),  // (min, max) inclusive
+    pub arity_out: (usize, usize), // (min, max) inclusive
     pub attrs: &'static [(&'static str, AttributesDataKind)],
 }
 
 impl Operator {
     #[inline(always)]
-    #[rustfmt::skip]
     pub fn static_str(self) -> &'static str {
         match self {
-            Operator::Clip => "Clip", Operator::Relu => "Relu", Operator::PRelu => "PRelu", Operator::DepthToSpace => "DepthToSpace",
-            Operator::Conv => "Conv", Operator::Gemm => "Gemm", Operator::MatMul => "MatMul", Operator::MaxPool => "MaxPool",
-            Operator::AveragePool => "AveragePool", Operator::Sigmoid => "Sigmoid", Operator::Flatten => "Flatten", Operator::Transpose => "Transpose",
-            Operator::Softmax => "Softmax", Operator::Add => "Add", Operator::Sub => "Sub", Operator::Mul => "Mul", Operator::Div => "Div",
-            Operator::Concat => "Concat", Operator::SoftPlus => "Softplus", Operator::ReduceMean => "ReduceMean", Operator::Tanh => "Tanh", Operator::Resize => "Resize", Operator::LeakyRelu => "LeakyRelu",
+            Operator::Clip => "Clip",
+            Operator::Relu => "Relu",
+            Operator::LeakyRelu => "LeakyRelu",
+            Operator::PRelu => "PRelu",
+            Operator::DepthToSpace => "DepthToSpace",
+            Operator::Conv => "Conv",
+            Operator::Add => "Add",
+            Operator::Sub => "Sub",
+            Operator::Mul => "Mul",
+            Operator::Div => "Div",
+            Operator::Sigmoid => "Sigmoid",
+            Operator::Tanh => "Tanh",
+            Operator::Concat => "Concat",
+            Operator::SoftPlus => "Softplus",
+            Operator::Resize => "Resize",
         }
     }
 
     #[inline(always)]
-    #[rustfmt::skip]
     pub fn lookup(name: &str) -> Option<Operator> {
         let op = match name {
-            "Clip" => Operator::Clip, "Relu" => Operator::Relu, "PRelu" => Operator::PRelu, "DepthToSpace" => Operator::DepthToSpace,
-            "Conv" => Operator::Conv, "Gemm" => Operator::Gemm, "MatMul" => Operator::MatMul, "MaxPool" => Operator::MaxPool,
-            "AveragePool" => Operator::AveragePool, "Sigmoid" => Operator::Sigmoid, "Flatten" => Operator::Flatten, "Transpose" => Operator::Transpose,
-            "Softmax" => Operator::Softmax, "Add" => Operator::Add, "Sub" => Operator::Sub, "Mul" => Operator::Mul, "Div" => Operator::Div,
-            "Concat" => Operator::Concat, "Softplus" => Operator::SoftPlus, "ReduceMean" => Operator::ReduceMean, "Tanh" => Operator::Tanh, "Resize" => Operator::Resize, "LeakyRelu" => Operator::LeakyRelu,
+            "Clip" => Operator::Clip,
+            "Relu" => Operator::Relu,
+            "PRelu" => Operator::PRelu,
+            "LeakyRelu" => Operator::LeakyRelu,
+            "DepthToSpace" => Operator::DepthToSpace,
+            "Conv" => Operator::Conv,
+            "Add" => Operator::Add,
+            "Sub" => Operator::Sub,
+            "Mul" => Operator::Mul,
+            "Div" => Operator::Div,
+            "Sigmoid" => Operator::Sigmoid,
+            "Tanh" => Operator::Tanh,
+            "Concat" => Operator::Concat,
+            "Softplus" => Operator::SoftPlus,
+            "Resize" => Operator::Resize,
             _ => return None,
         };
         Some(op)
@@ -155,25 +171,31 @@ impl Operator {
     pub fn spec(self) -> OperatorSpec {
         match self {
             Operator::Clip => OperatorSpec {
-                min_opset: 11,
+                min_opset: 13,
                 arity_in: (1, 3),
                 arity_out: (1, 1),
                 attrs: &[],
             },
             Operator::Relu => OperatorSpec {
-                min_opset: 13,
+                min_opset: 1,
                 arity_in: (1, 1),
                 arity_out: (1, 1),
                 attrs: &[],
             },
+            Operator::LeakyRelu => OperatorSpec {
+                min_opset: 1,
+                arity_in: (1, 1),
+                arity_out: (1, 1),
+                attrs: &[("alpha", AttributesDataKind::F32)],
+            },
             Operator::PRelu => OperatorSpec {
-                min_opset: 16,
+                min_opset: 9,
                 arity_in: (2, 2),
                 arity_out: (1, 1),
                 attrs: &[],
             },
             Operator::DepthToSpace => OperatorSpec {
-                min_opset: 11,
+                min_opset: 1,
                 arity_in: (1, 1),
                 arity_out: (1, 1),
                 attrs: &[
@@ -182,7 +204,7 @@ impl Operator {
                 ],
             },
             Operator::Conv => OperatorSpec {
-                min_opset: 11,
+                min_opset: 1,
                 arity_in: (2, 3),
                 arity_out: (1, 1),
                 attrs: &[
@@ -194,147 +216,59 @@ impl Operator {
                     ("strides", AttributesDataKind::Ints),
                 ],
             },
-            Operator::Gemm => OperatorSpec {
-                min_opset: 13,
-                arity_in: (2, 3),
-                arity_out: (1, 1),
-                attrs: &[
-                    ("alpha", AttributesDataKind::F32),
-                    ("beta", AttributesDataKind::F32),
-                    ("transA", AttributesDataKind::I64),
-                    ("transB", AttributesDataKind::I64),
-                ],
-            },
-            Operator::MatMul => OperatorSpec {
-                min_opset: 13,
-                arity_in: (2, 2),
-                arity_out: (1, 1),
-                attrs: &[],
-            },
-            Operator::MaxPool => OperatorSpec {
-                min_opset: 12,
-                arity_in: (1, 1),
-                arity_out: (1, 2),
-                attrs: &[
-                    ("auto_pad", AttributesDataKind::Str),
-                    ("ceil_mode", AttributesDataKind::I64),
-                    ("count_include_pad", AttributesDataKind::I64),
-                    ("kernel_shape", AttributesDataKind::Ints),
-                    ("pads", AttributesDataKind::Ints),
-                    ("strides", AttributesDataKind::Ints),
-                    ("storage_order", AttributesDataKind::I64),
-                ],
-            },
-            Operator::AveragePool => OperatorSpec {
-                min_opset: 11,
-                arity_in: (1, 1),
-                arity_out: (1, 1),
-                attrs: &[
-                    ("auto_pad", AttributesDataKind::Str),
-                    ("ceil_mode", AttributesDataKind::I64),
-                    ("count_include_pad", AttributesDataKind::I64),
-                    ("kernel_shape", AttributesDataKind::Ints),
-                    ("pads", AttributesDataKind::Ints),
-                    ("strides", AttributesDataKind::Ints),
-                ],
-            },
-            Operator::Sigmoid => OperatorSpec {
-                min_opset: 13,
-                arity_in: (1, 1),
-                arity_out: (1, 1),
-                attrs: &[],
-            },
-            Operator::Flatten => OperatorSpec {
-                min_opset: 13,
-                arity_in: (1, 1),
-                arity_out: (1, 1),
-                attrs: &[("axis", AttributesDataKind::I64)],
-            },
-            Operator::Transpose => OperatorSpec {
-                min_opset: 13,
-                arity_in: (1, 1),
-                arity_out: (1, 1),
-                attrs: &[("perm", AttributesDataKind::Ints)],
-            },
-            Operator::Softmax => OperatorSpec {
-                min_opset: 13,
-                arity_in: (1, 1),
-                arity_out: (1, 1),
-                attrs: &[("axis", AttributesDataKind::I64)],
-            },
             Operator::Add => OperatorSpec {
-                min_opset: 14,
+                min_opset: 7,
                 arity_in: (2, 2),
                 arity_out: (1, 1),
                 attrs: &[],
             },
             Operator::Sub => OperatorSpec {
-                min_opset: 14,
+                min_opset: 7,
                 arity_in: (2, 2),
                 arity_out: (1, 1),
                 attrs: &[],
             },
             Operator::Mul => OperatorSpec {
-                min_opset: 14,
+                min_opset: 7,
                 arity_in: (2, 2),
                 arity_out: (1, 1),
-                attrs: &[("allowzero", AttributesDataKind::I64)],
+                attrs: &[],
             },
             Operator::Div => OperatorSpec {
-                min_opset: 14,
+                min_opset: 7,
                 arity_in: (2, 2),
                 arity_out: (1, 1),
-                attrs: &[("allowzero", AttributesDataKind::I64)],
+                attrs: &[],
+            },
+            Operator::Sigmoid => OperatorSpec {
+                min_opset: 1,
+                arity_in: (1, 1),
+                arity_out: (1, 1),
+                attrs: &[],
+            },
+            Operator::Tanh => OperatorSpec {
+                min_opset: 1,
+                arity_in: (1, 1),
+                arity_out: (1, 1),
+                attrs: &[],
             },
             Operator::Concat => OperatorSpec {
-                min_opset: 4,
+                min_opset: 1,
                 arity_in: (1, 2147483647),
                 arity_out: (1, 1),
                 attrs: &[("axis", AttributesDataKind::I64)],
             },
             Operator::SoftPlus => OperatorSpec {
-                min_opset: 13,
-                arity_in: (1, 1),
-                arity_out: (1, 1),
-                attrs: &[],
-            },
-            Operator::ReduceMean => OperatorSpec {
-                min_opset: 13,
-                arity_in: (1, 1),
-                arity_out: (1, 1),
-                attrs: &[
-                    ("axes", AttributesDataKind::Ints),
-                    ("keepdims", AttributesDataKind::I64),
-                ],
-            },
-            Operator::Tanh => OperatorSpec {
-                min_opset: 13,
+                min_opset: 1,
                 arity_in: (1, 1),
                 arity_out: (1, 1),
                 attrs: &[],
             },
             Operator::Resize => OperatorSpec {
-                min_opset: 11,
-                arity_in: (1, 4), // X, roi, scales, sizes
+                min_opset: 10,
+                arity_in: (2, 2),
                 arity_out: (1, 1),
-                attrs: &[
-                    ("mode", AttributesDataKind::Str),
-                    ("nearest_mode", AttributesDataKind::Str),
-                    ("coordinate_transformation_mode", AttributesDataKind::Str),
-                    ("keep_aspect_ratio_policy", AttributesDataKind::Str),
-                    ("antialias", AttributesDataKind::I64),
-                    ("exclude_outside", AttributesDataKind::I64),
-                    ("extrapolation_value", AttributesDataKind::F32),
-                    ("cubic_coeff_a", AttributesDataKind::F32),
-                    ("cubic_coeff_b", AttributesDataKind::F32),
-                    ("cubic_coeff_c", AttributesDataKind::F32),
-                ],
-            },
-            Operator::LeakyRelu => OperatorSpec {
-                min_opset: 13,
-                arity_in: (1, 1),
-                arity_out: (1, 1),
-                attrs: &[("alpha", AttributesDataKind::F32)],
+                attrs: &[("mode", AttributesDataKind::Str)],
             },
         }
     }

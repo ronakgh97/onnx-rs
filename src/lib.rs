@@ -700,7 +700,7 @@ fn read_tensor(proto: &TensorProto, kind: &str, name: &str) -> Result<Tensor> {
                 "{kind}: '{name}' {numel} elements, but no data, external storage is not supported"
             ));
         }
-        1 => {}
+        1 => { /* continue */ }
         _ => {
             return Err(anyhow!("{kind}: '{name}' more than one storage field"));
         }
@@ -734,11 +734,7 @@ fn read_tensor(proto: &TensorProto, kind: &str, name: &str) -> Result<Tensor> {
 
         let (bytes_chunks, _) = proto.raw_data.as_chunks::<4>();
         let mut data = Vec::with_capacity(bytes_chunks.len());
-        data.extend(
-            bytes_chunks
-                .iter()
-                .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])),
-        );
+        data.extend(bytes_chunks.iter().map(|c| f32::from_le_bytes(*c)));
 
         Tensor::create(name, &proto.dims, data)
     } else {
