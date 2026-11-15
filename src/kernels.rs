@@ -997,7 +997,7 @@ fn add(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
         return Tensor::create(output, x_dims, data);
     }
 
-    broadcast_binary_op(x, y, output, |a, b| a + b)
+    broadcast_binary_op(x, y, output, |a, b| a.algebraic_add(b))
 }
 
 #[inline]
@@ -1049,7 +1049,7 @@ fn sub(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
         return Tensor::create(output, x_dims, data);
     }
 
-    broadcast_binary_op(x, y, output, |a, b| a - b)
+    broadcast_binary_op(x, y, output, |a, b| a.algebraic_sub(b))
 }
 
 #[inline]
@@ -1101,7 +1101,7 @@ fn mul(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
         return Tensor::create(output, x_dims, data);
     }
 
-    broadcast_binary_op(x, y, output, |a, b| a * b)
+    broadcast_binary_op(x, y, output, |a, b| a.algebraic_mul(b))
 }
 
 #[inline]
@@ -1153,7 +1153,7 @@ fn div(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
         return Tensor::create(output, x_dims, data);
     }
 
-    broadcast_binary_op(x, y, output, |a, b| a / b)
+    broadcast_binary_op(x, y, output, |a, b| a.algebraic_div(b))
 }
 
 #[inline(always)]
@@ -1614,7 +1614,7 @@ fn softplus(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
         }
         while i < n {
             let v = *src_ptr.add(i);
-            let y = v.max(0.0) + (-v.abs()).exp().ln_1p();
+            let y = v.max(0.0).algebraic_add(-v.abs()).exp().ln_1p();
             *dst_ptr.add(i) = y;
             i += 1;
         }
@@ -1625,6 +1625,8 @@ fn softplus(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
     Tensor::create(output, &x.dims, data)
 }
 
+// TODO: Resize is 'half-ass' implementation, not fully compliant with ONNX spec,
+//  but it won't silently corrupt output data
 #[inline]
 fn resize(
     output: &str,
@@ -1643,11 +1645,81 @@ fn resize(
         return Err(anyhow!("Resize: all input dims must be > 0, got {dims:?}"));
     }
 
-    let scales_t = inputs
-        .get(1)
+    // validate attributes (opset-11 spec, in addition)
+    let mode = take_attr_str(attrs, "mode")?.unwrap_or("nearest");
+    let coord_mode =
+        take_attr_str(attrs, "coordinate_transformation_mode")?.unwrap_or("half_pixel");
+    let nearest_mode = take_attr_str(attrs, "nearest_mode")?.unwrap_or("round_prefer_floor");
+    let antialias = take_attr_i64(attrs, "antialias")?.copied().unwrap_or(0);
+    let exclude_outside = take_attr_i64(attrs, "exclude_outside")?
         .copied()
-        .flatten()
-        .ok_or_else(|| anyhow!("Resize: scales (input 1) is required"))?;
+        .unwrap_or(0);
+    let extrap_val = take_attr_f32(attrs, "extrapolation_value")?
+        .copied()
+        .unwrap_or(0.0);
+
+    // defaults, and unsupported attributes
+    if antialias != 0 {
+        return Err(anyhow!("Resize: antialias={antialias} not supported"));
+    }
+    if exclude_outside != 0 {
+        return Err(anyhow!(
+            "Resize: exclude_outside={exclude_outside} not supported"
+        ));
+    }
+    if extrap_val != 0.0 {
+        return Err(anyhow!(
+            "Resize: extrapolation_value={extrap_val} not supported"
+        ));
+    }
+
+    let linear = match mode {
+        "nearest" => false,
+        "linear" => true,
+        other => {
+            return Err(anyhow!(
+                "Resize: mode '{other}' not supported (nearest|linear only)"
+            ));
+        }
+    };
+    match coord_mode {
+        "asymmetric" | "half_pixel" | "align_corners" | "pytorch_half_pixel" => {}
+        other => {
+            return Err(anyhow!(
+                "Resize: coordinate_transformation_mode '{other}' not supported"
+            ));
+        }
+    }
+    match nearest_mode {
+        "floor" | "ceil" | "round_prefer_floor" | "round_prefer_ceil" => {}
+        other => return Err(anyhow!("Resize: nearest_mode '{other}' not supported")),
+    }
+
+    // input 3 (sizes) is an i64 tensor, which the runtime cannot hold
+    if inputs.get(3).copied().flatten().is_some() {
+        return Err(anyhow!(
+            "Resize: 'sizes' (input 3) not supported, use 'scales'"
+        ));
+    }
+
+    // TODO: input 1 (roi) is only used when coordinate mode is 'tf_crop_and_resize', which we don't support yet
+    if let Some(roi) = inputs.get(1).copied().flatten() {
+        let n = roi.data.len();
+        let full = n % 2 == 0
+            && roi.data[..n / 2].iter().all(|&v| v == 0.0)
+            && roi.data[n / 2..].iter().all(|&v| v == 1.0);
+        if !full {
+            return Err(anyhow!(
+                "Resize: 'roi' (input 1) must be full-range [0..0, 1..1] for supported coordinate modes, got {roi:?}"
+            ));
+        }
+    }
+
+    // input 2 (scales) is a float tensor, one value per input dim, which we use to compute output dims
+    let scales_t =
+        inputs.get(2).copied().flatten().ok_or_else(|| {
+            anyhow!("Resize: 'scales' input is required ('sizes' is not supported)")
+        })?;
     if scales_t.data.len() != 4 {
         return Err(anyhow!(
             "Resize: scales must have one value per input dim (4), got {}",
@@ -1655,22 +1727,9 @@ fn resize(
         ));
     }
 
-    let linear = match take_attr_str(attrs, "mode")? {
-        Some(m) => match m {
-            "nearest" => false,
-            "linear" => true,
-            _ => {
-                return Err(anyhow!(
-                    "Resize: mode must be 'nearest' or 'linear', got {m}"
-                ));
-            }
-        },
-        None => false, // default to nearest
-    };
-
     // output_dim = floor(input_dim * scale), f32 math
-    let mut out_dims = [0i64; 4];
     let mut scales = [0f32; 4];
+    let mut out_dims = [0i64; 4];
     for (i, &s) in scales_t.data.iter().enumerate() {
         if !s.is_finite() || s <= 0.0 {
             return Err(anyhow!(
@@ -1687,6 +1746,7 @@ fn resize(
             ));
         }
     }
+
     let [n_out, c_out, h_out, w_out] = [
         out_dims[0] as usize,
         out_dims[1] as usize,
@@ -1700,55 +1760,177 @@ fn resize(
         dims[3] as usize,
     ];
 
-    let src_coord = |out_idx: usize, scale: f32, in_len: usize| -> (usize, usize, f32) {
-        let s = (out_idx as f32 / scale).clamp(0.0, (in_len - 1) as f32);
-        let lo = s.floor() as usize;
-        let hi = (lo + 1).min(in_len - 1);
-        (lo, hi, s - lo as f32)
-    };
+    #[inline(always)]
+    fn xform(out_idx: usize, scale: f32, in_len: usize, out_len: usize, mode: &str) -> f32 {
+        let o = out_idx as f32;
+        let in_f = in_len as f32;
+        let out_f = out_len as f32;
+        match mode {
+            "asymmetric" => o / scale,
+            "half_pixel" => (o + 0.5) / scale - 0.5,
+            "align_corners" => {
+                if out_len > 1 {
+                    o * (in_f - 1.0) / (out_f - 1.0)
+                } else {
+                    0.0
+                }
+            }
+            "pytorch_half_pixel" => {
+                if out_len > 1 {
+                    (o + 0.5) / scale - 0.5
+                } else {
+                    0.0
+                }
+            }
+            _ => unreachable!(),
+        }
+    }
+    #[inline(always)]
+    fn nearest_round(s: f32, mode: &str) -> i64 {
+        match mode {
+            "floor" => s.floor() as i64,
+            "ceil" => s.ceil() as i64,
+            "round_prefer_floor" => (s - 0.5).ceil() as i64, // ties → floor
+            "round_prefer_ceil" => (s + 0.5).floor() as i64, // ties → ceil
+            _ => unreachable!(),
+        }
+    }
 
+    // precompute mappings from output indices to input indices, for each axis
     let map_n: Vec<usize> = (0..n_out)
-        .map(|y| src_coord(y, scales[0], n_in).0)
+        .map(|i| {
+            nearest_round(xform(i, scales[0], n_in, n_out, coord_mode), nearest_mode)
+                .clamp(0, n_in as i64 - 1) as usize
+        })
         .collect();
     let map_c: Vec<usize> = (0..c_out)
-        .map(|y| src_coord(y, scales[1], c_in).0)
+        .map(|i| {
+            nearest_round(xform(i, scales[1], c_in, c_out, coord_mode), nearest_mode)
+                .clamp(0, c_in as i64 - 1) as usize
+        })
         .collect();
-    let map_h: Vec<(usize, usize, f32)> =
-        (0..h_out).map(|y| src_coord(y, scales[2], h_in)).collect();
-    let map_w: Vec<(usize, usize, f32)> =
-        (0..w_out).map(|y| src_coord(y, scales[3], w_in)).collect();
+    let h_near: Vec<usize> = (0..h_out)
+        .map(|i| {
+            nearest_round(xform(i, scales[2], h_in, h_out, coord_mode), nearest_mode)
+                .clamp(0, h_in as i64 - 1) as usize
+        })
+        .collect();
+    let w_near: Vec<usize> = (0..w_out)
+        .map(|i| {
+            nearest_round(xform(i, scales[3], w_in, w_out, coord_mode), nearest_mode)
+                .clamp(0, w_in as i64 - 1) as usize
+        })
+        .collect();
+    let h_lerp: Vec<(usize, usize, f32)> = (0..h_out)
+        .map(|i| {
+            let s = xform(i, scales[2], h_in, h_out, coord_mode).clamp(0.0, (h_in - 1) as f32);
+            let lo = s.floor() as usize;
+            (lo, (lo + 1).min(h_in - 1), s - lo as f32)
+        })
+        .collect();
+    let w_lerp: Vec<(usize, usize, f32)> = (0..w_out)
+        .map(|i| {
+            let s = xform(i, scales[3], w_in, w_out, coord_mode).clamp(0.0, (w_in - 1) as f32);
+            let lo = s.floor() as usize;
+            (lo, (lo + 1).min(w_in - 1), s - lo as f32)
+        })
+        .collect();
 
     let numel = n_out
         .checked_mul(c_out)
         .and_then(|v| v.checked_mul(h_out))
         .and_then(|v| v.checked_mul(w_out))
-        .ok_or_else(|| anyhow!("Resize: output dims {out_dims:?} overflow element count"))?;
+        .ok_or_else(|| anyhow!("Resize: output overflow"))?;
     let mut out_data = vec![0f32; numel];
+
+    // identity fast path (spatial scales exactly 1)
+    if scales[2] == 1.0 && scales[3] == 1.0 && h_out == h_in && w_out == w_in {
+        let plane = h_in * w_in;
+        #[allow(clippy::needless_range_loop)]
+        for on in 0..n_out {
+            let n_base = map_n[on] * c_in * plane;
+            for oc in 0..c_out {
+                let src = &x.data[n_base + map_c[oc] * plane..][..plane];
+                let dst_off = (on * c_out + oc) * plane;
+                out_data[dst_off..dst_off + plane].copy_from_slice(src);
+            }
+        }
+        return Tensor::create(output, &out_dims, out_data);
+    }
 
     // for each output row, the source row is fixed, gather source pixels per
     // output column and rows are contiguous and consecutive output rows mostly
     // alias the same source row, so this stays L1/L2 friendly
-    for on in 0..n_out {
-        let n_base = map_n[on] * c_in * h_in * w_in;
-        for oc in 0..c_out {
-            let nc_base = n_base + map_c[oc] * h_in * w_in;
-            for oy in 0..h_out {
-                let (y0, y1, fy) = map_h[oy];
-                let dst_row = &mut out_data[((on * c_out + oc) * h_out + oy) * w_out..][..w_out];
-
-                if !linear {
-                    let src_row = &x.data[nc_base + y0 * w_in..][..w_in];
-                    for (ox, dst) in dst_row.iter_mut().enumerate() {
-                        *dst = src_row[map_w[ox].0];
-                    }
-                } else {
+    if linear {
+        for on in 0..n_out {
+            let n_base = map_n[on] * c_in * h_in * w_in;
+            for oc in 0..c_out {
+                let nc_base = n_base + map_c[oc] * h_in * w_in;
+                for oy in 0..h_out {
+                    let (y0, y1, fy) = h_lerp[oy];
                     let row0 = &x.data[nc_base + y0 * w_in..][..w_in];
-                    let row1 = &x.data[nc_base + y1 * w_in..][..w_in];
-                    for (ox, dst) in dst_row.iter_mut().enumerate() {
-                        let (x0, x1, fx) = map_w[ox];
-                        let top = row0[x0] + (row0[x1] - row0[x0]) * fx;
-                        let bot = row1[x0] + (row1[x1] - row1[x0]) * fx;
-                        *dst = top + (bot - top) * fy;
+                    let dst_row =
+                        &mut out_data[((on * c_out + oc) * h_out + oy) * w_out..][..w_out];
+                    if fy == 0.0 {
+                        for (ox, dst) in dst_row.iter_mut().enumerate() {
+                            let (x0, x1, fx) = w_lerp[ox];
+                            *dst = row0[x0] + (row0[x1] - row0[x0]) * fx;
+                        }
+                    } else {
+                        let row1 = &x.data[nc_base + y1 * w_in..][..w_in];
+                        for (ox, dst) in dst_row.iter_mut().enumerate() {
+                            let (x0, x1, fx) = w_lerp[ox];
+                            let top = row0[x0] + (row0[x1] - row0[x0]) * fx;
+                            let bot = row1[x0] + (row1[x1] - row1[x0]) * fx;
+                            *dst = top + (bot - top) * fy;
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        // nearest, run-batched for upscale
+        let use_runs = scales[3] >= 2.0;
+        let w_runs: Vec<(usize, usize)> = if use_runs {
+            let mut runs = Vec::with_capacity(w_in);
+            let mut prev = w_near[0];
+            let mut cnt = 1;
+            for &v in &w_near[1..] {
+                if v == prev {
+                    cnt += 1;
+                } else {
+                    runs.push((prev, cnt));
+                    prev = v;
+                    cnt = 1;
+                }
+            }
+            runs.push((prev, cnt));
+            runs
+        } else {
+            vec![]
+        };
+
+        for on in 0..n_out {
+            let n_base = map_n[on] * c_in * h_in * w_in;
+            for oc in 0..c_out {
+                let nc_base = n_base + map_c[oc] * h_in * w_in;
+                for oy in 0..h_out {
+                    let y0 = h_near[oy];
+                    let src_row = &x.data[nc_base + y0 * w_in..][..w_in];
+                    let dst_row =
+                        &mut out_data[((on * c_out + oc) * h_out + oy) * w_out..][..w_out];
+                    if use_runs {
+                        let mut ox = 0;
+                        for &(src, len) in &w_runs {
+                            let v = src_row[src];
+                            let end = ox + len;
+                            dst_row[ox..end].fill(v);
+                            ox = end;
+                        }
+                    } else {
+                        for (ox, dst) in dst_row.iter_mut().enumerate() {
+                            *dst = src_row[w_near[ox]];
+                        }
                     }
                 }
             }

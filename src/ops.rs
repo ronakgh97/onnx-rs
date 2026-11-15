@@ -265,10 +265,20 @@ impl Operator {
                 attrs: &[],
             },
             Operator::Resize => OperatorSpec {
-                min_opset: 10,
-                arity_in: (2, 2),
+                min_opset: 11, // TODO: Half-ass implementation of opset 10 Resize
+                arity_in: (1, 4),
                 arity_out: (1, 1),
-                attrs: &[("mode", AttributesDataKind::Str)],
+                // TODO: Fuck this, fck this, stupid fucking onnx spec, FUCK YOU ALL
+                attrs: &[
+                    ("mode", AttributesDataKind::Str),
+                    ("coordinate_transformation_mode", AttributesDataKind::Str),
+                    ("nearest_mode", AttributesDataKind::Str),
+                    ("cubic_coeff_a", AttributesDataKind::F32),
+                    ("exclude_outside", AttributesDataKind::I64),
+                    ("extrapolation_value", AttributesDataKind::F32),
+                    ("antialias", AttributesDataKind::I64),
+                    ("keep_aspect_ratio_policy", AttributesDataKind::Str),
+                ],
             },
         }
     }
