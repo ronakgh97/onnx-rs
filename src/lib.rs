@@ -24,7 +24,7 @@
 //!     let model = Model::from_file("path/to/model.onnx").unwrap();
 //!     let input = Tensor::create("input_name", &[1, 3, 128, 128], vec![0f32; 1*3*128*128]).unwrap();
 //!     let output = model.run_single(input).unwrap();
-//!     print!("output tensor dims: {:?}", output.dims);
+//!     print!("output tensor dims: {:?}", output.dims());
 //! }
 //! ```
 //!
@@ -94,7 +94,8 @@ impl Model {
     }
     /// Create runnable model from .onnx file path
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
-        decode_model(&std::fs::read(path)?)
+        let mmap = unsafe { memmap2::Mmap::map(&std::fs::File::open(path.as_ref())?)? };
+        decode_model(&mmap[..])
     }
     /// Run 1-input/1-output graph with the given input tensor, returning the output tensor
     pub fn run_single(&self, data: Tensor) -> Result<Tensor> {

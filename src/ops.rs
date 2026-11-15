@@ -265,7 +265,7 @@ impl Operator {
                 attrs: &[],
             },
             Operator::Resize => OperatorSpec {
-                min_opset: 11, // TODO: Half-ass implementation of opset 10 Resize
+                min_opset: 11,
                 arity_in: (1, 4),
                 arity_out: (1, 1),
                 // TODO: Fuck this, fck this, stupid fucking onnx spec, FUCK YOU ALL

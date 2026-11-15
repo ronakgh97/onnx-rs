@@ -91,7 +91,7 @@ fn clip(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
 
     // if min is greater than max, then fill input with max
     if let (Some(lo), Some(hi)) = (min, max)
-        && lo > hi
+        && lo.total_cmp(&hi) == std::cmp::Ordering::Greater
     {
         return Tensor::create(output, &x.dims, vec![hi; x.len()]);
     }
@@ -1625,8 +1625,10 @@ fn softplus(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
     Tensor::create(output, &x.dims, data)
 }
 
-// TODO: Resize is 'half-ass' implementation, not fully compliant with ONNX spec,
-//  but it won't silently corrupt output data
+// only nearest and linear modes. coordinate modes asymmetric, half_pixel,
+// align_corners, pytorch_half_pixel and tf_crop_and_resize (roi crop, with
+// extrapolation_value outside the input). the 'sizes' input (int64),
+// antialias, exclude_outside and cubic are rejected loudly.
 #[inline]
 fn resize(
     output: &str,
@@ -1658,21 +1660,7 @@ fn resize(
         .copied()
         .unwrap_or(0.0);
 
-    // defaults, and unsupported attributes
-    if antialias != 0 {
-        return Err(anyhow!("Resize: antialias={antialias} not supported"));
-    }
-    if exclude_outside != 0 {
-        return Err(anyhow!(
-            "Resize: exclude_outside={exclude_outside} not supported"
-        ));
-    }
-    if extrap_val != 0.0 {
-        return Err(anyhow!(
-            "Resize: extrapolation_value={extrap_val} not supported"
-        ));
-    }
-
+    // defaults and unsupported attributes
     let linear = match mode {
         "nearest" => false,
         "linear" => true,
@@ -1683,7 +1671,8 @@ fn resize(
         }
     };
     match coord_mode {
-        "asymmetric" | "half_pixel" | "align_corners" | "pytorch_half_pixel" => {}
+        "asymmetric" | "half_pixel" | "align_corners" | "pytorch_half_pixel"
+        | "tf_crop_and_resize" => { /* continue */ }
         other => {
             return Err(anyhow!(
                 "Resize: coordinate_transformation_mode '{other}' not supported"
@@ -1695,25 +1684,48 @@ fn resize(
         other => return Err(anyhow!("Resize: nearest_mode '{other}' not supported")),
     }
 
-    // input 3 (sizes) is an i64 tensor, which the runtime cannot hold
-    if inputs.get(3).copied().flatten().is_some() {
+    if antialias != 0 {
+        return Err(anyhow!("Resize: antialias={antialias} not supported"));
+    }
+    if exclude_outside != 0 {
         return Err(anyhow!(
-            "Resize: 'sizes' (input 3) not supported, use 'scales'"
+            "Resize: exclude_outside={exclude_outside} not supported"
         ));
     }
 
-    // TODO: input 1 (roi) is only used when coordinate mode is 'tf_crop_and_resize', which we don't support yet
-    if let Some(roi) = inputs.get(1).copied().flatten() {
-        let n = roi.data.len();
-        let full = n % 2 == 0
-            && roi.data[..n / 2].iter().all(|&v| v == 0.0)
-            && roi.data[n / 2..].iter().all(|&v| v == 1.0);
-        if !full {
-            return Err(anyhow!(
-                "Resize: 'roi' (input 1) must be full-range [0..0, 1..1] for supported coordinate modes, got {roi:?}"
-            ));
-        }
+    let is_tf = coord_mode == "tf_crop_and_resize";
+    if !is_tf && extrap_val != 0.0 {
+        return Err(anyhow!(
+            "Resize: extrapolation_value only meaningful with tf_crop_and_resize"
+        ));
     }
+
+    // input 1 'roi' only takes effect for tf_crop_and_resize, and must be a float tensor of length 8
+    // because the roi is [N1, C1, H1, W1, N2, C2, H2, W2] for the crop. if absent, we assume the full range [0,0,0,0,1,1,1,1]
+    let roi_vec: Vec<f32> = if is_tf {
+        match inputs.get(1).copied().flatten() {
+            Some(r) => {
+                if r.data.len() != 8 {
+                    return Err(anyhow!(
+                        "Resize: tf_crop_and_resize needs roi len 2*rank=8, got {}",
+                        r.data.len()
+                    ));
+                }
+                if !r.data.iter().all(|v| v.is_finite()) {
+                    return Err(anyhow!(
+                        "Resize: tf_crop_and_resize roi must be finite, got {:?}",
+                        r.data
+                    ));
+                }
+                r.data.to_vec()
+            }
+            // no roi given, the crop is the whole image, ONNX Runtime accepts
+            // this and resizes the full range, so we do the same
+            None => vec![0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+        }
+    } else {
+        vec![]
+    };
 
     // input 2 (scales) is a float tensor, one value per input dim, which we use to compute output dims
     let scales_t =
@@ -1727,20 +1739,27 @@ fn resize(
         ));
     }
 
+    // input 3 (sizes) is an i64 tensor, which the runtime cannot hold/support yet
+    if inputs.get(3).copied().flatten().is_some() {
+        return Err(anyhow!(
+            "Resize: 'sizes' (input 3) not supported, use 'scales'"
+        ));
+    }
+
     // output_dim = floor(input_dim * scale), f32 math
     let mut scales = [0f32; 4];
     let mut out_dims = [0i64; 4];
     for (i, &s) in scales_t.data.iter().enumerate() {
         if !s.is_finite() || s <= 0.0 {
             return Err(anyhow!(
-                "Resize-10: scales[{i}] must be finite and > 0, got {s}"
+                "Resize: scales[{i}] must be finite and > 0, got {s}"
             ));
         }
         scales[i] = s;
         out_dims[i] = (dims[i] as f32 * s).floor() as i64;
         if out_dims[i] <= 0 {
             return Err(anyhow!(
-                "Resize-10: scales[{i}]={s} would collapse input dim {} to {}",
+                "Resize: scales[{i}]={s} would collapse input dim {} to {}",
                 dims[i],
                 out_dims[i]
             ));
@@ -1761,11 +1780,19 @@ fn resize(
     ];
 
     #[inline(always)]
-    fn xform(out_idx: usize, scale: f32, in_len: usize, out_len: usize, mode: &str) -> f32 {
+    fn xform(
+        out_idx: usize,
+        in_len: usize,
+        out_len: usize,
+        scale: f32,
+        coord_mode: &str,
+        roi: &[f32],
+        dim: usize,
+    ) -> f32 {
         let o = out_idx as f32;
         let in_f = in_len as f32;
         let out_f = out_len as f32;
-        match mode {
+        match coord_mode {
             "asymmetric" => o / scale,
             "half_pixel" => (o + 0.5) / scale - 0.5,
             "align_corners" => {
@@ -1782,7 +1809,16 @@ fn resize(
                     0.0
                 }
             }
-            _ => unreachable!(),
+            "tf_crop_and_resize" => {
+                let start = roi[dim];
+                let end = roi[dim + 4];
+                if out_len > 1 {
+                    start * (in_f - 1.0) + o * (end - start) * (in_f - 1.0) / (out_f - 1.0)
+                } else {
+                    0.5 * (start + end) * (in_f - 1.0)
+                }
+            }
+            _ => unreachable!("unhandled coordinate_transformation_mode {coord_mode}"),
         }
     }
     #[inline(always)]
@@ -1792,49 +1828,68 @@ fn resize(
             "ceil" => s.ceil() as i64,
             "round_prefer_floor" => (s - 0.5).ceil() as i64, // ties → floor
             "round_prefer_ceil" => (s + 0.5).floor() as i64, // ties → ceil
-            _ => unreachable!(),
+            _ => unreachable!("unhandled nearest_mode {mode}"),
         }
     }
 
+    // raw transformed coordinate for every output index, per axis.
+    // the out-of-range flags come from the raw value, before any clamping,
+    // because in tf_crop_and_resize a coordinate outside [0, in_len-1] means
+    // the output value is the extrapolation value, not a clamped sample
+    let raw_n: Vec<f32> = (0..n_out)
+        .map(|i| xform(i, n_in, n_out, scales[0], coord_mode, &roi_vec, 0))
+        .collect();
+    let raw_c: Vec<f32> = (0..c_out)
+        .map(|i| xform(i, c_in, c_out, scales[1], coord_mode, &roi_vec, 1))
+        .collect();
+    let raw_h: Vec<f32> = (0..h_out)
+        .map(|i| xform(i, h_in, h_out, scales[2], coord_mode, &roi_vec, 2))
+        .collect();
+    let raw_w: Vec<f32> = (0..w_out)
+        .map(|i| xform(i, w_in, w_out, scales[3], coord_mode, &roi_vec, 3))
+        .collect();
+
+    #[inline(always)]
+    fn out_of_range(raw: f32, in_len: usize) -> bool {
+        raw < 0.0 || raw > in_len as f32 - 1.0
+    }
+
+    let n_oor: Vec<bool> = raw_n.iter().map(|&s| out_of_range(s, n_in)).collect();
+    let c_oor: Vec<bool> = raw_c.iter().map(|&s| out_of_range(s, c_in)).collect();
+    let h_oor: Vec<bool> = raw_h.iter().map(|&s| out_of_range(s, h_in)).collect();
+    let w_oor: Vec<bool> = raw_w.iter().map(|&s| out_of_range(s, w_in)).collect();
+
     // precompute mappings from output indices to input indices, for each axis
-    let map_n: Vec<usize> = (0..n_out)
-        .map(|i| {
-            nearest_round(xform(i, scales[0], n_in, n_out, coord_mode), nearest_mode)
-                .clamp(0, n_in as i64 - 1) as usize
-        })
+    let map_n: Vec<usize> = raw_n
+        .iter()
+        .map(|&s| nearest_round(s, nearest_mode).clamp(0, n_in as i64 - 1) as usize)
         .collect();
-    let map_c: Vec<usize> = (0..c_out)
-        .map(|i| {
-            nearest_round(xform(i, scales[1], c_in, c_out, coord_mode), nearest_mode)
-                .clamp(0, c_in as i64 - 1) as usize
-        })
+    let map_c: Vec<usize> = raw_c
+        .iter()
+        .map(|&s| nearest_round(s, nearest_mode).clamp(0, c_in as i64 - 1) as usize)
         .collect();
-    let h_near: Vec<usize> = (0..h_out)
-        .map(|i| {
-            nearest_round(xform(i, scales[2], h_in, h_out, coord_mode), nearest_mode)
-                .clamp(0, h_in as i64 - 1) as usize
-        })
+    let h_near: Vec<usize> = raw_h
+        .iter()
+        .map(|&s| nearest_round(s, nearest_mode).clamp(0, h_in as i64 - 1) as usize)
         .collect();
-    let w_near: Vec<usize> = (0..w_out)
-        .map(|i| {
-            nearest_round(xform(i, scales[3], w_in, w_out, coord_mode), nearest_mode)
-                .clamp(0, w_in as i64 - 1) as usize
-        })
+    let w_near: Vec<usize> = raw_w
+        .iter()
+        .map(|&s| nearest_round(s, nearest_mode).clamp(0, w_in as i64 - 1) as usize)
         .collect();
-    let h_lerp: Vec<(usize, usize, f32)> = (0..h_out)
-        .map(|i| {
-            let s = xform(i, scales[2], h_in, h_out, coord_mode).clamp(0.0, (h_in - 1) as f32);
-            let lo = s.floor() as usize;
-            (lo, (lo + 1).min(h_in - 1), s - lo as f32)
-        })
-        .collect();
-    let w_lerp: Vec<(usize, usize, f32)> = (0..w_out)
-        .map(|i| {
-            let s = xform(i, scales[3], w_in, w_out, coord_mode).clamp(0.0, (w_in - 1) as f32);
-            let lo = s.floor() as usize;
-            (lo, (lo + 1).min(w_in - 1), s - lo as f32)
-        })
-        .collect();
+
+    #[inline(always)]
+    fn lerp_indices(raw: &[f32], in_len: usize) -> Vec<(usize, usize, f32)> {
+        raw.iter()
+            .map(|&s| {
+                let s = s.clamp(0.0, (in_len - 1) as f32);
+                let lo = s.floor() as usize;
+                (lo, (lo + 1).min(in_len - 1), s - lo as f32)
+            })
+            .collect()
+    }
+
+    let h_lerp: Vec<(usize, usize, f32)> = lerp_indices(&raw_h, h_in);
+    let w_lerp: Vec<(usize, usize, f32)> = lerp_indices(&raw_w, w_in);
 
     let numel = n_out
         .checked_mul(c_out)
@@ -1843,8 +1898,10 @@ fn resize(
         .ok_or_else(|| anyhow!("Resize: output overflow"))?;
     let mut out_data = vec![0f32; numel];
 
-    // identity fast path (spatial scales exactly 1)
-    if scales[2] == 1.0 && scales[3] == 1.0 && h_out == h_in && w_out == w_in {
+    // identity fast path (spatial scales exactly 1). not valid for
+    // tf_crop_and_resize, where the roi can shift the sampling even when the
+    // output size equals the input size
+    if !is_tf && scales[2] == 1.0 && scales[3] == 1.0 && h_out == h_in && w_out == w_in {
         let plane = h_in * w_in;
         #[allow(clippy::needless_range_loop)]
         for on in 0..n_out {
@@ -1866,19 +1923,40 @@ fn resize(
             let n_base = map_n[on] * c_in * h_in * w_in;
             for oc in 0..c_out {
                 let nc_base = n_base + map_c[oc] * h_in * w_in;
+                if is_tf && (n_oor[on] || c_oor[oc]) {
+                    // the N or C coordinate is outside the input, the whole
+                    // plane is the extrapolation value
+                    let plane = h_out * w_out;
+                    out_data[((on * c_out + oc) * plane)..][..plane].fill(extrap_val);
+                    continue;
+                }
                 for oy in 0..h_out {
                     let (y0, y1, fy) = h_lerp[oy];
                     let row0 = &x.data[nc_base + y0 * w_in..][..w_in];
                     let dst_row =
                         &mut out_data[((on * c_out + oc) * h_out + oy) * w_out..][..w_out];
+                    if is_tf && h_oor[oy] {
+                        // the H coordinate is outside the input, every pixel of
+                        // this row is the extrapolation value
+                        dst_row.fill(extrap_val);
+                        continue;
+                    }
                     if fy == 0.0 {
                         for (ox, dst) in dst_row.iter_mut().enumerate() {
+                            if is_tf && w_oor[ox] {
+                                *dst = extrap_val;
+                                continue;
+                            }
                             let (x0, x1, fx) = w_lerp[ox];
                             *dst = row0[x0] + (row0[x1] - row0[x0]) * fx;
                         }
                     } else {
                         let row1 = &x.data[nc_base + y1 * w_in..][..w_in];
                         for (ox, dst) in dst_row.iter_mut().enumerate() {
+                            if is_tf && w_oor[ox] {
+                                *dst = extrap_val;
+                                continue;
+                            }
                             let (x0, x1, fx) = w_lerp[ox];
                             let top = row0[x0] + (row0[x1] - row0[x0]) * fx;
                             let bot = row1[x0] + (row1[x1] - row1[x0]) * fx;
@@ -1889,8 +1967,10 @@ fn resize(
             }
         }
     } else {
-        // nearest, run-batched for upscale
-        let use_runs = scales[3] >= 2.0;
+        // nearest, run-batched for upscale, the run batching cannot be used in
+        // tf_crop_and_resize, where an out-of-range column is the
+        // extrapolation value and not a repeat of the previous source pixel
+        let use_runs = !is_tf && scales[3] >= 2.0;
         let w_runs: Vec<(usize, usize)> = if use_runs {
             let mut runs = Vec::with_capacity(w_in);
             let mut prev = w_near[0];
@@ -1914,11 +1994,24 @@ fn resize(
             let n_base = map_n[on] * c_in * h_in * w_in;
             for oc in 0..c_out {
                 let nc_base = n_base + map_c[oc] * h_in * w_in;
+                if is_tf && (n_oor[on] || c_oor[oc]) {
+                    // the N or C coordinate is outside the input, the whole
+                    // plane is the extrapolation value
+                    let plane = h_out * w_out;
+                    out_data[((on * c_out + oc) * plane)..][..plane].fill(extrap_val);
+                    continue;
+                }
                 for oy in 0..h_out {
                     let y0 = h_near[oy];
                     let src_row = &x.data[nc_base + y0 * w_in..][..w_in];
                     let dst_row =
                         &mut out_data[((on * c_out + oc) * h_out + oy) * w_out..][..w_out];
+                    if is_tf && h_oor[oy] {
+                        // the H coordinate is outside the input, every pixel of
+                        // this row is the extrapolation value
+                        dst_row.fill(extrap_val);
+                        continue;
+                    }
                     if use_runs {
                         let mut ox = 0;
                         for &(src, len) in &w_runs {
@@ -1929,6 +2022,10 @@ fn resize(
                         }
                     } else {
                         for (ox, dst) in dst_row.iter_mut().enumerate() {
+                            if is_tf && w_oor[ox] {
+                                *dst = extrap_val;
+                                continue;
+                            }
                             *dst = src_row[w_near[ox]];
                         }
                     }
