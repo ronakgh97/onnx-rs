@@ -9,7 +9,7 @@ use blas_rs::GLOBAL_THREAD_POOL;
 use blas_rs::lvl3;
 use blas_rs::rayon::prelude::*;
 use std::arch::x86_64::{
-    __m256, _CMP_LT_OQ, _MM_FROUND_CUR_DIRECTION, _mm256_add_epi32, _mm256_add_ps,
+    __m256, _CMP_LT_OQ, _CMP_NEQ_OQ, _MM_FROUND_CUR_DIRECTION, _mm256_add_epi32, _mm256_add_ps,
     _mm256_blendv_ps, _mm256_castsi256_ps, _mm256_cmp_ps, _mm256_cvtps_epi32, _mm256_div_ps,
     _mm256_fmadd_ps, _mm256_loadu_ps, _mm256_max_ps, _mm256_min_ps, _mm256_mul_ps,
     _mm256_permute2f128_ps, _mm256_round_ps, _mm256_set1_epi32, _mm256_set1_ps, _mm256_setzero_ps,
@@ -93,7 +93,7 @@ fn clip(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
     if let (Some(lo), Some(hi)) = (min, max)
         && lo.total_cmp(&hi) == std::cmp::Ordering::Greater
     {
-        return Tensor::create(output, &x.dims, vec![hi; x.len()]);
+        return Tensor::create(output, x.dims.as_slice(), vec![hi; x.len()]);
     }
 
     // basically do this cmp::min(max, cmp::max(min, x))
@@ -142,7 +142,7 @@ fn clip(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
         }
     }
 
-    Tensor::create(output, &x.dims, out_data)
+    Tensor::create(output, x.dims.as_slice(), out_data)
 }
 
 #[inline]
@@ -151,7 +151,7 @@ fn relu(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
 
     let mut data = vec![0f32; x.data.len()];
     if x.data.is_empty() {
-        return Tensor::create(output, &x.dims, data);
+        return Tensor::create(output, x.dims.as_slice(), data);
     }
 
     if data.len() >= 8 {
@@ -201,8 +201,7 @@ fn relu(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
             *out = v.max(0.0);
         }
     }
-
-    Tensor::create(output, &x.dims, data)
+    Tensor::create(output, x.dims.as_slice(), data)
 }
 
 #[inline]
@@ -220,7 +219,7 @@ fn leaky_relu(
     // f(x) = alpha * x for x < 0, x otherwise
     let mut data = vec![0f32; x.data.len()];
     if x.data.is_empty() {
-        return Tensor::create(output, &x.dims, data);
+        return Tensor::create(output, x.dims.as_slice(), data);
     }
 
     if data.len() >= 8 {
@@ -273,17 +272,17 @@ fn leaky_relu(
 
             // scalar (< 8 floats)
             for (&v, out) in input_rem8.iter().zip(output_rem8.iter_mut()) {
-                *out = if v < 0.0 { alpha * v } else { v };
+                *out = if v < 0.0 { alpha.algebraic_mul(v) } else { v };
             }
         }
     } else {
         // scalar path
         for (&v, out) in x.data.iter().zip(data.iter_mut()) {
-            *out = if v < 0.0 { alpha * v } else { v };
+            *out = if v < 0.0 { alpha.algebraic_mul(v) } else { v };
         }
     }
 
-    Tensor::create(output, &x.dims, data)
+    Tensor::create(output, x.dims.as_slice(), data)
 }
 
 #[inline]
@@ -320,10 +319,57 @@ fn prelu(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
 
     let data_len = x.data.len();
     if x.data.is_empty() {
-        return Tensor::create(output, &x.dims, vec![]);
+        return Tensor::create(output, x.dims.as_slice(), vec![]);
     }
 
-    // TODO: Add faster path for scalar slope
+    if slope.len() == 1 {
+        // slope is a scalar, apply it directly
+        let alpha = slope.data[0];
+        if !alpha.is_finite() {
+            return Err(anyhow!("PRelu: slope must be finite, got {alpha}"));
+        }
+        let mut data: Vec<f32> = Vec::with_capacity(data_len);
+        let dst_ptr = data.spare_capacity_mut().as_mut_ptr() as *mut f32;
+        let src_ptr = x.data.as_ptr();
+        unsafe {
+            let mut i = 0;
+            let zero = _mm256_setzero_ps();
+            let va = _mm256_set1_ps(alpha);
+            while i + 32 <= data_len {
+                let v0 = _mm256_loadu_ps(src_ptr.add(i));
+                let v1 = _mm256_loadu_ps(src_ptr.add(i + 8));
+                let v2 = _mm256_loadu_ps(src_ptr.add(i + 16));
+                let v3 = _mm256_loadu_ps(src_ptr.add(i + 24));
+                let m0 = _mm256_cmp_ps::<{ _CMP_LT_OQ }>(v0, zero);
+                let m1 = _mm256_cmp_ps::<{ _CMP_LT_OQ }>(v1, zero);
+                let m2 = _mm256_cmp_ps::<{ _CMP_LT_OQ }>(v2, zero);
+                let m3 = _mm256_cmp_ps::<{ _CMP_LT_OQ }>(v3, zero);
+                let o0 = _mm256_blendv_ps(v0, _mm256_mul_ps(v0, va), m0);
+                let o1 = _mm256_blendv_ps(v1, _mm256_mul_ps(v1, va), m1);
+                let o2 = _mm256_blendv_ps(v2, _mm256_mul_ps(v2, va), m2);
+                let o3 = _mm256_blendv_ps(v3, _mm256_mul_ps(v3, va), m3);
+                _mm256_storeu_ps(dst_ptr.add(i), o0);
+                _mm256_storeu_ps(dst_ptr.add(i + 8), o1);
+                _mm256_storeu_ps(dst_ptr.add(i + 16), o2);
+                _mm256_storeu_ps(dst_ptr.add(i + 24), o3);
+                i += 32;
+            }
+            while i + 8 <= data_len {
+                let v = _mm256_loadu_ps(src_ptr.add(i));
+                let m = _mm256_cmp_ps::<{ _CMP_LT_OQ }>(v, zero);
+                let o = _mm256_blendv_ps(v, _mm256_mul_ps(v, va), m);
+                _mm256_storeu_ps(dst_ptr.add(i), o);
+                i += 8;
+            }
+            while i < data_len {
+                let v = *src_ptr.add(i);
+                *dst_ptr.add(i) = if v < 0.0 { v.algebraic_mul(alpha) } else { v };
+                i += 1;
+            }
+            data.set_len(data_len);
+        }
+        return Tensor::create(output, x.dims.as_slice(), data);
+    }
 
     // calculate the number of elements in the last contiguous block
     // of x that is covered by a single slope value
@@ -404,7 +450,7 @@ fn prelu(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
                 let s = slope.data[s_idx];
                 while i < len {
                     let v = *in_ptr.add(i);
-                    *out_ptr.add(i) = v + (s - 1.0) * v.min(0.0);
+                    *out_ptr.add(i) = if v < 0.0 { v.algebraic_mul(s) } else { v };
                     i += 1;
                 }
 
@@ -439,7 +485,7 @@ fn prelu(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
         }
     }
 
-    Tensor::create(output, &x.dims, data)
+    Tensor::create(output, x.dims.as_slice(), data)
 }
 
 #[inline]
@@ -596,7 +642,7 @@ fn interleave2(a: *const f32, b: *const f32, dst: *mut f32, w: usize) {
             x8(a.add(k), b.add(k), dst.add(2 * k));
             k += 8;
         }
-        // tail, ovewrite last 8 floats,
+        // tail, overwrite last 8 floats,
         // even if w < 8, because we already wrote the first part
         if k < w {
             let k = w - 8;
@@ -752,7 +798,7 @@ fn conv(
     }
 
     let bias: Option<&[f32]> = match inputs.get(2).copied().flatten() {
-        Some(t) if t.dims.as_ref() == [m as i64] => Some(t.data.as_ref()),
+        Some(t) if t.dims.as_slice() == [m as i64] => Some(t.data.as_slice()),
         Some(t) => {
             return Err(anyhow!(
                 "Conv: bias must have shape [{m}], got dims {:?}",
@@ -813,6 +859,8 @@ fn conv(
         .checked_mul(ow)
         .ok_or_else(|| anyhow!("Conv: output dims {oh}*{ow} overflow element count"))?;
 
+    // TODO: Faster path for 3x3 kernels with strides=1 and pad=1 (no im2col needed)
+
     // group convolutions
     let m_g = m / group; // output channels per group
     let c_g = cin / group; // input channels per group
@@ -824,8 +872,8 @@ fn conv(
         .ok_or_else(|| anyhow!("Conv: output buffer {n}*{m}*{p} overflows"))?;
 
     // tile over output rows so the im2col buffer stays bounded
-    // ~12 MB tile stays mostly L3-resident while the gemm reads it back
-    const COL_TILE_BUDGET: usize = 12 << 20;
+    // ~10 MB tile stays mostly L3-resident while the gemm reads it back
+    const COL_TILE_BUDGET: usize = 10 << 20;
     let budget_f32 = COL_TILE_BUDGET / size_of::<f32>();
     let tile_oh = match k_g.checked_mul(ow) {
         Some(k_ow) => (budget_f32 / k_ow).max(1).min(oh),
@@ -1157,7 +1205,7 @@ fn div(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
 }
 
 #[inline(always)]
-fn broadcast_binary_op<OP>(x: &Tensor, y: &Tensor, output: &str, scalar_op: OP) -> Result<Tensor>
+fn broadcast_binary_op<OP>(x: &Tensor, y: &Tensor, output: &str, op: OP) -> Result<Tensor>
 where
     OP: Fn(f32, f32) -> f32,
 {
@@ -1187,7 +1235,7 @@ where
             xd
         } else {
             return Err(anyhow!(
-                "{}: cannot broadcast X dims {:?} with Y dims {:?}",
+                "tensor {}: cannot broadcast X dims {:?} with Y dims {:?}",
                 output,
                 x_dims,
                 y_dims
@@ -1207,7 +1255,9 @@ where
     let total: usize = out_dims
         .iter()
         .try_fold(1usize, |a, &d| a.checked_mul(d as usize))
-        .ok_or_else(|| anyhow!("{}: dims overflow", output))?;
+        .ok_or_else(|| anyhow!("tensor {}: dims overflow", output))?;
+
+    // TODO: Faster path for x.len()=1 || y.len()=1
 
     // zero-stride which mean any size-1 output
     // axis so it merges cleanly below
@@ -1257,7 +1307,7 @@ where
 
     unsafe {
         for idx in 0..total {
-            *data_ptr.add(idx) = scalar_op(*xp.add(xi), *yp.add(yi));
+            *data_ptr.add(idx) = op(*xp.add(xi), *yp.add(yi));
             for k in (0..d_rank).rev() {
                 coords[k] += 1;
                 let (d, bx, by) = axes[k];
@@ -1339,7 +1389,7 @@ fn sigmoid(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
         data.set_len(n);
     }
 
-    Tensor::create(output, &x.dims, data)
+    Tensor::create(output, x.dims.as_slice(), data)
 }
 
 #[inline]
@@ -1354,12 +1404,27 @@ fn tanh(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
     // tanh(x) = (e^(2x) - 1) / (e^(2x) + 1)
     unsafe {
         let one = _mm256_set1_ps(1.0);
+        let pos20 = _mm256_set1_ps(20.0);
+        let neg20 = _mm256_set1_ps(-20.0);
+        // clamp |x| <= 20 so 2x can't overflow exp, tanh saturates at |x| ~ 20 in f32
+        // NaN lanes are preserved so NaN input still yields NaN output
+        let clamp = |v: __m256| {
+            let clamped = _mm256_max_ps(_mm256_min_ps(v, pos20), neg20);
+            let is_nan = _mm256_cmp_ps(v, v, _CMP_NEQ_OQ);
+            _mm256_blendv_ps(clamped, v, is_nan)
+        };
+
         let mut i = 0;
         while i + 32 <= n {
             let x0 = _mm256_loadu_ps(src_ptr.add(i));
             let x1 = _mm256_loadu_ps(src_ptr.add(i + 8));
             let x2 = _mm256_loadu_ps(src_ptr.add(i + 16));
             let x3 = _mm256_loadu_ps(src_ptr.add(i + 24));
+
+            let x0 = clamp(x0);
+            let x1 = clamp(x1);
+            let x2 = clamp(x2);
+            let x3 = clamp(x3);
 
             let e0 = avx_exp(_mm256_add_ps(x0, x0)); // 2x
             let e1 = avx_exp(_mm256_add_ps(x1, x1));
@@ -1379,6 +1444,7 @@ fn tanh(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
         }
         while i + 8 <= n {
             let x0 = _mm256_loadu_ps(src_ptr.add(i));
+            let x0 = clamp(x0);
             let e0 = avx_exp(_mm256_add_ps(x0, x0));
             let y0 = _mm256_div_ps(_mm256_sub_ps(e0, one), _mm256_add_ps(e0, one));
             _mm256_storeu_ps(dst_ptr.add(i), y0);
@@ -1387,14 +1453,14 @@ fn tanh(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
         while i < n {
             let v = (*src_ptr.add(i)).clamp(-44.0, 44.0);
             let e = (2.0 * v).exp();
-            *dst_ptr.add(i) = (e - 1.0) / (e + 1.0);
+            *dst_ptr.add(i) = (e - 1.0).algebraic_div(e + 1.0);
             i += 1;
         }
 
         data.set_len(n);
     }
 
-    Tensor::create(output, &x.dims, data)
+    Tensor::create(output, x.dims.as_slice(), data)
 }
 
 #[inline(always)]
@@ -1403,7 +1469,11 @@ fn avx_exp(x: __m256) -> __m256 {
         // clamp to avoid overflow/underflow in exp
         let max_val = _mm256_set1_ps(f32::MAX.ln()); // 88.72
         let min_val = _mm256_set1_ps(f32::MIN_POSITIVE.ln()); // -87.34
-        let x = _mm256_min_ps(_mm256_max_ps(x, min_val), max_val);
+        let clamped = _mm256_min_ps(_mm256_max_ps(x, min_val), max_val);
+
+        // MAXPS/MINPS swallow NaN (return the second operand), so restore NaN lanes
+        let is_nan = _mm256_cmp_ps(x, x, _CMP_NEQ_OQ);
+        let x = _mm256_blendv_ps(clamped, x, is_nan);
 
         // consts
         let v_log2e = _mm256_set1_ps(std::f32::consts::LOG2_E); // 1.44269504
@@ -1492,6 +1562,8 @@ fn concat(
     }
     let axis = axis as usize;
 
+    // TODO: Fast path for axis=1 here
+
     // every input must have the same rank, and matching dims outside 'axis'
     let mut axis_total: i64 = 0;
     for t in tensors.iter() {
@@ -1525,9 +1597,14 @@ fn concat(
     let total: usize = out_dims
         .iter()
         .try_fold(1usize, |a, &d| a.checked_mul(d as usize))
-        .ok_or_else(|| anyhow!("Concat: output dims {out_dims:?} overflow element count"))?;
+        .ok_or_else(|| {
+            anyhow!(
+                "Concat: tensor {}: output dims {out_dims:?} overflow element count",
+                output
+            )
+        })?;
     if total == 0 {
-        return Tensor::create(output, &out_dims, Vec::new());
+        return Tensor::create(output, &out_dims, vec![]);
     }
 
     let mut data = Vec::with_capacity(total);
@@ -1614,6 +1691,7 @@ fn softplus(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
         }
         while i < n {
             let v = *src_ptr.add(i);
+            // softplus(v) = max(v, 0) + ln(1 + exp(-|v|))
             let y = v.max(0.0).algebraic_add(-v.abs()).exp().ln_1p();
             *dst_ptr.add(i) = y;
             i += 1;
@@ -1622,7 +1700,7 @@ fn softplus(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
         data.set_len(n);
     }
 
-    Tensor::create(output, &x.dims, data)
+    Tensor::create(output, x.dims.as_slice(), data)
 }
 
 // only nearest and linear modes. coordinate modes asymmetric, half_pixel,

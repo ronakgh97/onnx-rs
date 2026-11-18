@@ -38,17 +38,18 @@ mod tensor;
 pub use crate::tensor::{Tensor, TensorSpec};
 
 use crate::ops::AttributesDataKind;
-use crate::ops::{AttributesDataValue, Operator};
+pub use crate::ops::{AttributesDataValue, Operator};
 use crate::proto::{ModelProto, TensorProto, ValueInfoProto};
 use anyhow::{Result, anyhow};
 use prost::Message;
+use rustc_hash::{FxHashMap, FxHashSet};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Instant;
 
 /// Represents a Node in the ONNX graph,
-/// which is an operator with its inputs, outputs, and attributes
+/// which is an operator with its inputs, outputs, and attributes.
 #[repr(C)]
 #[derive(Clone)]
 pub struct Node {
@@ -72,9 +73,27 @@ impl Node {
     pub fn inputs_outputs(&self) -> (&[String], &[String]) {
         (&self.inputs, &self.outputs)
     }
+    // /// Attributes of the node, as a list of (attribute_name, attribute_value)
+    // pub fn attrs(&self) -> Vec<(String, String)> {
+    //     let attrs_str: Vec<(String, String)> = self
+    //         .attrs
+    //         .iter()
+    //         .map(|(name, value)| {
+    //             let value_str = match value {
+    //                 AttributesDataValue::F32(f) => f.to_string(),
+    //                 AttributesDataValue::I64(i) => i.to_string(),
+    //                 AttributesDataValue::Str(s) => s.to_string(),
+    //                 AttributesDataValue::Ints(ints) => format!("{:?}", ints),
+    //             };
+    //             (name.to_string(), value_str)
+    //         })
+    //         .collect();
+    //     attrs_str
+    // }
 }
 
-/// Represents an ONNX model, which is a directed acyclic graph of nodes (operators)
+/// Represents an ONNX model, which is a directed acyclic graph of nodes (operators).
+/// Model clone is cheap, so it can be passed around and used in multiple threads, underlying data is shared.
 #[repr(C)]
 #[derive(Clone)]
 pub struct Model {
@@ -89,8 +108,8 @@ pub struct Model {
 
 impl Model {
     /// Create runnable model from slice of bytes
-    pub fn from_bytes(bytes: &Arc<[u8]>) -> Result<Self> {
-        decode_model(bytes)
+    pub fn from_bytes(bytes: impl AsRef<[u8]>) -> Result<Self> {
+        decode_model(bytes.as_ref())
     }
     /// Create runnable model from .onnx file path
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
@@ -144,7 +163,7 @@ impl Model {
             ));
         }
 
-        // dbg!("timings: {:?}", record_timings);
+        dbg!("timings: {:?}", record_timings);
 
         Ok(t.clone())
     }
@@ -203,7 +222,7 @@ impl Model {
             produced.push(t.clone());
         }
 
-        // dbg!("timings: {:?}", record_timings);
+        dbg!("timings: {:?}", record_timings);
 
         Ok(produced)
     }
@@ -354,9 +373,12 @@ fn decode_model(bytes: &[u8]) -> Result<Model> {
     };
 
     // initialize scope tracking structures
-    let mut defined: HashSet<String> = HashSet::with_capacity(64);
-    let mut producers: HashMap<String, usize> = HashMap::with_capacity(64);
-    let mut init_names: HashSet<String> = HashSet::with_capacity(64);
+    let mut defined: FxHashSet<String> =
+        FxHashSet::with_capacity_and_hasher(96, Default::default());
+    let mut producers: FxHashMap<String, usize> =
+        FxHashMap::with_capacity_and_hasher(96, Default::default());
+    let mut init_names: FxHashSet<String> =
+        FxHashSet::with_capacity_and_hasher(96, Default::default());
     let mut initializers: Vec<Tensor> = Vec::with_capacity(graph.initializer.len());
 
     for (i, tensor) in graph.initializer.iter().enumerate() {
@@ -630,7 +652,7 @@ fn decode_model(bytes: &[u8]) -> Result<Model> {
     }
 
     // collect operators used in the graph, in topological order, deduped
-    let mut dedup_set = HashSet::with_capacity(nodes.len());
+    let mut dedup_set = FxHashSet::with_capacity_and_hasher(nodes.len(), Default::default());
     let operators: Vec<String> = nodes
         .iter()
         .filter_map(|node| {
@@ -736,7 +758,6 @@ fn read_tensor(proto: &TensorProto, kind: &str, name: &str) -> Result<Tensor> {
         let (bytes_chunks, _) = proto.raw_data.as_chunks::<4>();
         let mut data = Vec::with_capacity(bytes_chunks.len());
         data.extend(bytes_chunks.iter().map(|c| f32::from_le_bytes(*c)));
-
         Tensor::create(name, &proto.dims, data)
     } else {
         if proto.float_data.len() as u64 != numel {

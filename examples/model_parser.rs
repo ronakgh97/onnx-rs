@@ -12,6 +12,7 @@ fn main() -> Result<()> {
     println!("input needed: {:?}", inputs);
     println!("output given: {:?}", outputs);
     println!("node count: {:?}", model.nodes().len());
+    println!("initializer count: {:?}", model.initializers().len());
     println!("operators used: {:?}", model.operators());
     println!();
     for (i, node) in model.nodes().iter().enumerate() {

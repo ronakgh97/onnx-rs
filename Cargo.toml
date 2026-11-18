@@ -14,15 +14,20 @@ keywords = ["onnx", "runtimes", "inference", "neural-networks", "ai"]
 name = "onnx_rs"
 path = "src/lib.rs"
 
+[profile.dev]
+opt-level = 0
+lto = "off"
+debug = "full"
+
 [profile.release]
 opt-level = 2
-codegen-units = 128
 lto = "fat"
 debug = false
 
 [dependencies]
 prost = "0.14.6"
 memmap2 = "0.9.12"
+rustc-hash = "2.1.3"
 blas-rs = { git = "https://github.com/ronakgh97/blas-rs" }
 anyhow = "1.0.104"
 

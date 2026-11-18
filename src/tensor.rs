@@ -6,15 +6,15 @@ use std::sync::Arc;
 #[derive(Clone, Debug)]
 pub struct Tensor {
     pub(crate) name: Arc<str>,
-    pub(crate) dims: Arc<[i64]>,
-    pub(crate) data: Arc<[f32]>,
+    pub(crate) dims: Arc<Vec<i64>>,
+    pub(crate) data: Arc<Vec<f32>>,
 }
 
 /// Tensor specification with name and shape
 #[derive(Clone, Debug)]
 pub struct TensorSpec {
     pub name: Arc<str>,
-    pub dims: Arc<[i64]>,
+    pub dims: Arc<Vec<i64>>,
 }
 
 impl Tensor {
@@ -36,11 +36,11 @@ impl Tensor {
         }
         Ok(Self {
             name: Arc::from(name),
-            dims: Arc::from(dims),
-            data: Arc::from(data),
+            dims: Arc::new(dims.to_vec()),
+            data: Arc::new(data),
         })
     }
-    pub fn zeros(name: &str, dims: &[i64]) -> Result<Self> {
+    pub fn zeros(name: &str, dims: Vec<i64>) -> Result<Self> {
         let numel = dims
             .iter()
             .try_fold(1usize, |a, &d| {
@@ -51,8 +51,8 @@ impl Tensor {
             })?;
         Ok(Self {
             name: Arc::from(name),
-            dims: Arc::from(dims),
-            data: Arc::from(vec![0f32; numel]),
+            dims: Arc::new(dims),
+            data: Arc::new(vec![0f32; numel]),
         })
     }
     #[inline]
@@ -61,11 +61,11 @@ impl Tensor {
     }
     #[inline]
     pub fn dims(&self) -> &[i64] {
-        &self.dims
+        self.dims.as_slice()
     }
     #[inline]
     pub fn data(&self) -> &[f32] {
-        &self.data
+        self.data.as_slice()
     }
     #[inline]
     pub fn len(&self) -> usize {
