@@ -61,7 +61,6 @@ impl Operator {
 
 // TODO: Need reference inputs/outputs for correctness testing
 // TODO: Overflow & underflow bugs are hiding in plane sight
-// TODO: SIMD path has weird behavior with NaN/Inf, need to check against ONNX spec
 
 #[inline]
 fn clip(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
@@ -217,69 +216,65 @@ fn leaky_relu(
     }
 
     // f(x) = alpha * x for x < 0, x otherwise
-    let mut data = vec![0f32; x.data.len()];
-    if x.data.is_empty() {
-        return Tensor::create(output, x.dims.as_slice(), data);
+    let n = x.data.len();
+    if n == 0 {
+        return Tensor::create(output, x.dims.as_slice(), Vec::new());
     }
 
-    if data.len() >= 8 {
-        // simd path
-        unsafe {
-            let zero = _mm256_setzero_ps();
-            let va = _mm256_set1_ps(alpha);
+    let mut data: Vec<f32> = Vec::with_capacity(n);
+    let dst_ptr = data.spare_capacity_mut().as_mut_ptr() as *mut f32;
+    let src_ptr = x.data.as_ptr();
 
-            // unroll by 4 ymm per iteration, same skeleton as `relu`
-            let (input_chunk32, input_rem32) = x.data.as_chunks::<32>();
-            let (output_chunk32, output_rem32) = data.as_chunks_mut::<32>();
+    unsafe {
+        let zero = _mm256_setzero_ps();
+        let va = _mm256_set1_ps(alpha);
 
-            for (input, output) in input_chunk32.iter().zip(output_chunk32.iter_mut()) {
-                let v0 = _mm256_loadu_ps(input.as_ptr());
-                let v1 = _mm256_loadu_ps(input.as_ptr().add(8));
-                let v2 = _mm256_loadu_ps(input.as_ptr().add(16));
-                let v3 = _mm256_loadu_ps(input.as_ptr().add(24));
+        let mut i = 0usize;
+        // unroll by 4 ymm per iteration, same skeleton as `relu`
+        while i + 32 <= n {
+            let v0 = _mm256_loadu_ps(src_ptr.add(i));
+            let v1 = _mm256_loadu_ps(src_ptr.add(i + 8));
+            let v2 = _mm256_loadu_ps(src_ptr.add(i + 16));
+            let v3 = _mm256_loadu_ps(src_ptr.add(i + 24));
 
-                let a0 = _mm256_mul_ps(v0, va);
-                let a1 = _mm256_mul_ps(v1, va);
-                let a2 = _mm256_mul_ps(v2, va);
-                let a3 = _mm256_mul_ps(v3, va);
+            let a0 = _mm256_mul_ps(v0, va);
+            let a1 = _mm256_mul_ps(v1, va);
+            let a2 = _mm256_mul_ps(v2, va);
+            let a3 = _mm256_mul_ps(v3, va);
 
-                // blendv(a, b, mask): lane from b where mask set, from a where clear
-                let m0 = _mm256_cmp_ps(v0, zero, _CMP_LT_OQ);
-                let m1 = _mm256_cmp_ps(v1, zero, _CMP_LT_OQ);
-                let m2 = _mm256_cmp_ps(v2, zero, _CMP_LT_OQ);
-                let m3 = _mm256_cmp_ps(v3, zero, _CMP_LT_OQ);
+            let m0 = _mm256_cmp_ps(v0, zero, _CMP_LT_OQ);
+            let m1 = _mm256_cmp_ps(v1, zero, _CMP_LT_OQ);
+            let m2 = _mm256_cmp_ps(v2, zero, _CMP_LT_OQ);
+            let m3 = _mm256_cmp_ps(v3, zero, _CMP_LT_OQ);
 
-                let v0 = _mm256_blendv_ps(v0, a0, m0);
-                let v1 = _mm256_blendv_ps(v1, a1, m1);
-                let v2 = _mm256_blendv_ps(v2, a2, m2);
-                let v3 = _mm256_blendv_ps(v3, a3, m3);
+            let v0 = _mm256_blendv_ps(v0, a0, m0);
+            let v1 = _mm256_blendv_ps(v1, a1, m1);
+            let v2 = _mm256_blendv_ps(v2, a2, m2);
+            let v3 = _mm256_blendv_ps(v3, a3, m3);
 
-                _mm256_storeu_ps(output.as_mut_ptr(), v0);
-                _mm256_storeu_ps(output.as_mut_ptr().add(8), v1);
-                _mm256_storeu_ps(output.as_mut_ptr().add(16), v2);
-                _mm256_storeu_ps(output.as_mut_ptr().add(24), v3);
-            }
-
-            // simd tail (< 32 floats)
-            let (input_chunk8, input_rem8) = input_rem32.as_chunks::<8>();
-            let (output_chunk8, output_rem8) = output_rem32.as_chunks_mut::<8>();
-            for (input, output) in input_chunk8.iter().zip(output_chunk8.iter_mut()) {
-                let v = _mm256_loadu_ps(input.as_ptr());
-                let a = _mm256_mul_ps(v, va);
-                let m = _mm256_cmp_ps(v, zero, _CMP_LT_OQ);
-                _mm256_storeu_ps(output.as_mut_ptr(), _mm256_blendv_ps(v, a, m));
-            }
-
-            // scalar (< 8 floats)
-            for (&v, out) in input_rem8.iter().zip(output_rem8.iter_mut()) {
-                *out = if v < 0.0 { alpha.algebraic_mul(v) } else { v };
-            }
+            _mm256_storeu_ps(dst_ptr.add(i), v0);
+            _mm256_storeu_ps(dst_ptr.add(i + 8), v1);
+            _mm256_storeu_ps(dst_ptr.add(i + 16), v2);
+            _mm256_storeu_ps(dst_ptr.add(i + 24), v3);
+            i += 32;
         }
-    } else {
-        // scalar path
-        for (&v, out) in x.data.iter().zip(data.iter_mut()) {
-            *out = if v < 0.0 { alpha.algebraic_mul(v) } else { v };
+        // simd tail (< 32 floats)
+        while i + 8 <= n {
+            let v = _mm256_loadu_ps(src_ptr.add(i));
+            let a = _mm256_mul_ps(v, va);
+            let m = _mm256_cmp_ps(v, zero, _CMP_LT_OQ);
+            _mm256_storeu_ps(dst_ptr.add(i), _mm256_blendv_ps(v, a, m));
+            i += 8;
         }
+        // scalar (< 8 floats)
+        while i < n {
+            let v = *src_ptr.add(i);
+            *dst_ptr.add(i) = if v < 0.0 { alpha.algebraic_mul(v) } else { v };
+            i += 1;
+        }
+    }
+    unsafe {
+        data.set_len(n);
     }
 
     Tensor::create(output, x.dims.as_slice(), data)
@@ -1003,46 +998,40 @@ fn add(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
 
     let x_dims = &x.dims;
     let y_dims = &y.dims;
-    let n = x.data.len();
 
-    // fast simd path for same shape tensors
-    if x_dims == y_dims {
-        let mut data = Vec::with_capacity(n);
-        let xp = x.data.as_ptr();
-        let yp = y.data.as_ptr();
-        let op: *mut f32 = data.as_mut_ptr();
-
-        unsafe {
-            let mut i = 0usize;
-            while i + 32 <= n {
-                let a0 = _mm256_loadu_ps(xp.add(i));
-                let a1 = _mm256_loadu_ps(xp.add(i + 8));
-                let a2 = _mm256_loadu_ps(xp.add(i + 16));
-                let a3 = _mm256_loadu_ps(xp.add(i + 24));
-                let b0 = _mm256_loadu_ps(yp.add(i));
-                let b1 = _mm256_loadu_ps(yp.add(i + 8));
-                let b2 = _mm256_loadu_ps(yp.add(i + 16));
-                let b3 = _mm256_loadu_ps(yp.add(i + 24));
-                _mm256_storeu_ps(op.add(i), _mm256_add_ps(a0, b0));
-                _mm256_storeu_ps(op.add(i + 8), _mm256_add_ps(a1, b1));
-                _mm256_storeu_ps(op.add(i + 16), _mm256_add_ps(a2, b2));
-                _mm256_storeu_ps(op.add(i + 24), _mm256_add_ps(a3, b3));
-                i += 32;
-            }
-            while i + 8 <= n {
-                let a = _mm256_loadu_ps(xp.add(i));
-                let b = _mm256_loadu_ps(yp.add(i));
-                _mm256_storeu_ps(op.add(i), _mm256_add_ps(a, b));
-                i += 8;
-            }
-            while i < n {
-                *op.add(i) = *xp.add(i) + *yp.add(i);
-                i += 1;
-            }
-            data.set_len(n);
+    // one SIMD loop handles both same-shape inputs and a scalar broadcast,
+    // the scalar side is loaded as a broadcast ymm instead of from memory
+    let x_scalar = x.len() == 1 && x.dims.len() <= 1;
+    let y_scalar = y.len() == 1 && y.dims.len() <= 1;
+    if x_dims == y_dims || x_scalar || y_scalar {
+        let (n, od) = if x_scalar {
+            (y.data.len(), y_dims.as_slice())
+        } else {
+            (x.data.len(), x_dims.as_slice())
+        };
+        if n == 0 {
+            return Tensor::create(output, od, vec![]);
         }
 
-        return Tensor::create(output, x_dims, data);
+        let mut data: Vec<f32> = Vec::with_capacity(n);
+        let dst_ptr = data.spare_capacity_mut().as_mut_ptr() as *mut f32;
+        let xp = x.data.as_ptr();
+        let yp = y.data.as_ptr();
+
+        unsafe {
+            simd_binary_op(
+                n,
+                dst_ptr,
+                xp,
+                yp,
+                x_scalar,
+                y_scalar,
+                _mm256_add_ps,
+                |a, b| a.algebraic_add(b),
+            );
+            data.set_len(n);
+        }
+        return Tensor::create(output, od, data);
     }
 
     broadcast_binary_op(x, y, output, |a, b| a.algebraic_add(b))
@@ -1055,46 +1044,38 @@ fn sub(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
 
     let x_dims = &x.dims;
     let y_dims = &y.dims;
-    let n = x.data.len();
 
-    // fast simd path for same shape tensors
-    if x_dims == y_dims {
-        let mut data = Vec::with_capacity(n);
-        let xp = x.data.as_ptr();
-        let yp = y.data.as_ptr();
-        let op: *mut f32 = data.as_mut_ptr();
-
-        unsafe {
-            let mut i = 0usize;
-            while i + 32 <= n {
-                let a0 = _mm256_loadu_ps(xp.add(i));
-                let a1 = _mm256_loadu_ps(xp.add(i + 8));
-                let a2 = _mm256_loadu_ps(xp.add(i + 16));
-                let a3 = _mm256_loadu_ps(xp.add(i + 24));
-                let b0 = _mm256_loadu_ps(yp.add(i));
-                let b1 = _mm256_loadu_ps(yp.add(i + 8));
-                let b2 = _mm256_loadu_ps(yp.add(i + 16));
-                let b3 = _mm256_loadu_ps(yp.add(i + 24));
-                _mm256_storeu_ps(op.add(i), _mm256_sub_ps(a0, b0));
-                _mm256_storeu_ps(op.add(i + 8), _mm256_sub_ps(a1, b1));
-                _mm256_storeu_ps(op.add(i + 16), _mm256_sub_ps(a2, b2));
-                _mm256_storeu_ps(op.add(i + 24), _mm256_sub_ps(a3, b3));
-                i += 32;
-            }
-            while i + 8 <= n {
-                let a = _mm256_loadu_ps(xp.add(i));
-                let b = _mm256_loadu_ps(yp.add(i));
-                _mm256_storeu_ps(op.add(i), _mm256_sub_ps(a, b));
-                i += 8;
-            }
-            while i < n {
-                *op.add(i) = *xp.add(i) - *yp.add(i);
-                i += 1;
-            }
-            data.set_len(n);
+    let x_scalar = x.len() == 1 && x.dims.len() <= 1;
+    let y_scalar = y.len() == 1 && y.dims.len() <= 1;
+    if x_dims == y_dims || x_scalar || y_scalar {
+        let (n, od) = if x_scalar {
+            (y.data.len(), y_dims.as_slice())
+        } else {
+            (x.data.len(), x_dims.as_slice())
+        };
+        if n == 0 {
+            return Tensor::create(output, od, vec![]);
         }
 
-        return Tensor::create(output, x_dims, data);
+        let mut data: Vec<f32> = Vec::with_capacity(n);
+        let dst_ptr = data.spare_capacity_mut().as_mut_ptr() as *mut f32;
+        let xp = x.data.as_ptr();
+        let yp = y.data.as_ptr();
+
+        unsafe {
+            simd_binary_op(
+                n,
+                dst_ptr,
+                xp,
+                yp,
+                x_scalar,
+                y_scalar,
+                _mm256_sub_ps,
+                |a, b| a.algebraic_sub(b),
+            );
+            data.set_len(n);
+        }
+        return Tensor::create(output, od, data);
     }
 
     broadcast_binary_op(x, y, output, |a, b| a.algebraic_sub(b))
@@ -1107,46 +1088,38 @@ fn mul(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
 
     let x_dims = &x.dims;
     let y_dims = &y.dims;
-    let n = x.data.len();
 
-    // fast simd path for same shape tensors
-    if x_dims == y_dims {
-        let mut data = Vec::with_capacity(n);
-        let xp = x.data.as_ptr();
-        let yp = y.data.as_ptr();
-        let op: *mut f32 = data.as_mut_ptr();
-
-        unsafe {
-            let mut i = 0usize;
-            while i + 32 <= n {
-                let a0 = _mm256_loadu_ps(xp.add(i));
-                let a1 = _mm256_loadu_ps(xp.add(i + 8));
-                let a2 = _mm256_loadu_ps(xp.add(i + 16));
-                let a3 = _mm256_loadu_ps(xp.add(i + 24));
-                let b0 = _mm256_loadu_ps(yp.add(i));
-                let b1 = _mm256_loadu_ps(yp.add(i + 8));
-                let b2 = _mm256_loadu_ps(yp.add(i + 16));
-                let b3 = _mm256_loadu_ps(yp.add(i + 24));
-                _mm256_storeu_ps(op.add(i), _mm256_mul_ps(a0, b0));
-                _mm256_storeu_ps(op.add(i + 8), _mm256_mul_ps(a1, b1));
-                _mm256_storeu_ps(op.add(i + 16), _mm256_mul_ps(a2, b2));
-                _mm256_storeu_ps(op.add(i + 24), _mm256_mul_ps(a3, b3));
-                i += 32;
-            }
-            while i + 8 <= n {
-                let a = _mm256_loadu_ps(xp.add(i));
-                let b = _mm256_loadu_ps(yp.add(i));
-                _mm256_storeu_ps(op.add(i), _mm256_mul_ps(a, b));
-                i += 8;
-            }
-            while i < n {
-                *op.add(i) = *xp.add(i) * *yp.add(i);
-                i += 1;
-            }
-            data.set_len(n);
+    let x_scalar = x.len() == 1 && x.dims.len() <= 1;
+    let y_scalar = y.len() == 1 && y.dims.len() <= 1;
+    if x_dims == y_dims || x_scalar || y_scalar {
+        let (n, od) = if x_scalar {
+            (y.data.len(), y_dims.as_slice())
+        } else {
+            (x.data.len(), x_dims.as_slice())
+        };
+        if n == 0 {
+            return Tensor::create(output, od, vec![]);
         }
 
-        return Tensor::create(output, x_dims, data);
+        let mut data: Vec<f32> = Vec::with_capacity(n);
+        let dst_ptr = data.spare_capacity_mut().as_mut_ptr() as *mut f32;
+        let xp = x.data.as_ptr();
+        let yp = y.data.as_ptr();
+
+        unsafe {
+            simd_binary_op(
+                n,
+                dst_ptr,
+                xp,
+                yp,
+                x_scalar,
+                y_scalar,
+                _mm256_mul_ps,
+                |a, b| a.algebraic_mul(b),
+            );
+            data.set_len(n);
+        }
+        return Tensor::create(output, od, data);
     }
 
     broadcast_binary_op(x, y, output, |a, b| a.algebraic_mul(b))
@@ -1159,49 +1132,127 @@ fn div(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
 
     let x_dims = &x.dims;
     let y_dims = &y.dims;
-    let n = x.data.len();
 
-    // fast simd path for same shape tensors
-    if x_dims == y_dims {
-        let mut data = Vec::with_capacity(n);
-        let xp = x.data.as_ptr();
-        let yp = y.data.as_ptr();
-        let op: *mut f32 = data.as_mut_ptr();
-
-        unsafe {
-            let mut i = 0usize;
-            while i + 32 <= n {
-                let a0 = _mm256_loadu_ps(xp.add(i));
-                let a1 = _mm256_loadu_ps(xp.add(i + 8));
-                let a2 = _mm256_loadu_ps(xp.add(i + 16));
-                let a3 = _mm256_loadu_ps(xp.add(i + 24));
-                let b0 = _mm256_loadu_ps(yp.add(i));
-                let b1 = _mm256_loadu_ps(yp.add(i + 8));
-                let b2 = _mm256_loadu_ps(yp.add(i + 16));
-                let b3 = _mm256_loadu_ps(yp.add(i + 24));
-                _mm256_storeu_ps(op.add(i), _mm256_div_ps(a0, b0));
-                _mm256_storeu_ps(op.add(i + 8), _mm256_div_ps(a1, b1));
-                _mm256_storeu_ps(op.add(i + 16), _mm256_div_ps(a2, b2));
-                _mm256_storeu_ps(op.add(i + 24), _mm256_div_ps(a3, b3));
-                i += 32;
-            }
-            while i + 8 <= n {
-                let a = _mm256_loadu_ps(xp.add(i));
-                let b = _mm256_loadu_ps(yp.add(i));
-                _mm256_storeu_ps(op.add(i), _mm256_div_ps(a, b));
-                i += 8;
-            }
-            while i < n {
-                *op.add(i) = *xp.add(i) / *yp.add(i);
-                i += 1;
-            }
-            data.set_len(n);
+    let x_scalar = x.len() == 1 && x.dims.len() <= 1;
+    let y_scalar = y.len() == 1 && y.dims.len() <= 1;
+    if x_dims == y_dims || x_scalar || y_scalar {
+        let (n, od) = if x_scalar {
+            (y.data.len(), y_dims.as_slice())
+        } else {
+            (x.data.len(), x_dims.as_slice())
+        };
+        if n == 0 {
+            return Tensor::create(output, od, vec![]);
         }
 
-        return Tensor::create(output, x_dims, data);
+        let mut data: Vec<f32> = Vec::with_capacity(n);
+        let dst_ptr = data.spare_capacity_mut().as_mut_ptr() as *mut f32;
+        let xp = x.data.as_ptr();
+        let yp = y.data.as_ptr();
+
+        unsafe {
+            simd_binary_op(
+                n,
+                dst_ptr,
+                xp,
+                yp,
+                x_scalar,
+                y_scalar,
+                _mm256_div_ps,
+                |a, b| a.algebraic_div(b),
+            );
+            data.set_len(n);
+        }
+        return Tensor::create(output, od, data);
     }
 
     broadcast_binary_op(x, y, output, |a, b| a.algebraic_div(b))
+}
+
+#[inline(always)]
+#[allow(clippy::too_many_arguments)]
+unsafe fn simd_binary_op(
+    n: usize,
+    dst: *mut f32,
+    xp: *const f32,
+    yp: *const f32,
+    x_scalar: bool,
+    y_scalar: bool,
+    simd_op: unsafe fn(__m256, __m256) -> __m256,
+    scalar_op: fn(f32, f32) -> f32,
+) {
+    unsafe {
+        let sx = _mm256_set1_ps(*xp);
+        let sy = _mm256_set1_ps(*yp);
+        let mut i = 0usize;
+        while i + 32 <= n {
+            let a0 = if x_scalar {
+                sx
+            } else {
+                _mm256_loadu_ps(xp.add(i))
+            };
+            let a1 = if x_scalar {
+                sx
+            } else {
+                _mm256_loadu_ps(xp.add(i + 8))
+            };
+            let a2 = if x_scalar {
+                sx
+            } else {
+                _mm256_loadu_ps(xp.add(i + 16))
+            };
+            let a3 = if x_scalar {
+                sx
+            } else {
+                _mm256_loadu_ps(xp.add(i + 24))
+            };
+            let b0 = if y_scalar {
+                sy
+            } else {
+                _mm256_loadu_ps(yp.add(i))
+            };
+            let b1 = if y_scalar {
+                sy
+            } else {
+                _mm256_loadu_ps(yp.add(i + 8))
+            };
+            let b2 = if y_scalar {
+                sy
+            } else {
+                _mm256_loadu_ps(yp.add(i + 16))
+            };
+            let b3 = if y_scalar {
+                sy
+            } else {
+                _mm256_loadu_ps(yp.add(i + 24))
+            };
+            _mm256_storeu_ps(dst.add(i), simd_op(a0, b0));
+            _mm256_storeu_ps(dst.add(i + 8), simd_op(a1, b1));
+            _mm256_storeu_ps(dst.add(i + 16), simd_op(a2, b2));
+            _mm256_storeu_ps(dst.add(i + 24), simd_op(a3, b3));
+            i += 32;
+        }
+        while i + 8 <= n {
+            let a = if x_scalar {
+                sx
+            } else {
+                _mm256_loadu_ps(xp.add(i))
+            };
+            let b = if y_scalar {
+                sy
+            } else {
+                _mm256_loadu_ps(yp.add(i))
+            };
+            _mm256_storeu_ps(dst.add(i), simd_op(a, b));
+            i += 8;
+        }
+        while i < n {
+            let a = if x_scalar { *xp } else { *xp.add(i) };
+            let b = if y_scalar { *yp } else { *yp.add(i) };
+            *dst.add(i) = scalar_op(a, b);
+            i += 1;
+        }
+    }
 }
 
 #[inline(always)]
@@ -1257,7 +1308,7 @@ where
         .try_fold(1usize, |a, &d| a.checked_mul(d as usize))
         .ok_or_else(|| anyhow!("tensor {}: dims overflow", output))?;
 
-    // TODO: Faster path for x.len()=1 || y.len()=1
+    let mut data: Vec<f32> = Vec::with_capacity(total);
 
     // zero-stride which mean any size-1 output
     // axis so it merges cleanly below
@@ -1296,7 +1347,6 @@ where
     axes.reverse();
 
     let d_rank = axes.len();
-    let mut data = Vec::with_capacity(total);
     let data_ptr: *mut f32 = data.as_mut_ptr();
 
     let xp = x.data.as_ptr();
@@ -1322,9 +1372,9 @@ where
             }
         }
         data.set_len(total);
-    }
 
-    Tensor::create(output, &out_dims, data)
+        Tensor::create(output, &out_dims, data)
+    }
 }
 
 #[inline]

@@ -40,21 +40,7 @@ impl Tensor {
             data: Arc::new(data),
         })
     }
-    pub fn zeros(name: &str, dims: Vec<i64>) -> Result<Self> {
-        let numel = dims
-            .iter()
-            .try_fold(1usize, |a, &d| {
-                usize::try_from(d).ok().and_then(|d| a.checked_mul(d))
-            })
-            .ok_or_else(|| {
-                anyhow::anyhow!("Tensor '{name}': dims {dims:?} overflow element count")
-            })?;
-        Ok(Self {
-            name: Arc::from(name),
-            dims: Arc::new(dims),
-            data: Arc::new(vec![0f32; numel]),
-        })
-    }
+
     #[inline]
     pub fn name(&self) -> &str {
         &self.name
@@ -96,7 +82,7 @@ impl Tensor {
 }
 
 #[inline(always)]
-pub fn take_tensor<'s>(
+pub(crate) fn take_tensor<'s>(
     inputs: &'s [Option<&'s Tensor>],
     index: usize,
     op_name: &str,

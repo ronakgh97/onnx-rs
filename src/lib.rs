@@ -1,4 +1,4 @@
-//! A small, pure-Rust ONNX runtime for running supported `f32` models on
+//! A small, pure-Rust ONNX runtime for running supported `fp32` models on
 //! x86_64 CPUs.
 //!
 //! Models are loaded from `.onnx` (must contain both graph and initializers)
@@ -11,12 +11,12 @@
 //! model shapes. Unsupported graph features are rejected instead of being
 //! silently ignored or producing undesired outputs.
 //!
-//! Comparison with [ORT](https://docs.rs/ort/latest/ort/), running [SRGAN](https://aihub.qualcomm.com/compute/models/srgan) (5.92 MB) from Qualcomm's AI Hub
+//! Comparison with [ORT](https://docs.rs/ort/latest/ort/), running [ESRGAN](https://aihub.qualcomm.com/compute/models/esrgam) (69.04 MB) from Qualcomm's AI Hub
 //!
 //! | Runtime | Input | Output |
 //! |---------|-------|--------|
-//! | ONNX_RS | <img src="https://raw.githubusercontent.com/ronakgh97/onnx_rs/refs/heads/master/images/sample_1.png" width="512"> | <img src="https://raw.githubusercontent.com/ronakgh97/onnx_rs/refs/heads/master/images/srgan_onnx_rs_x4.png" width="512"> |
-//! | ORT     | <img src="https://raw.githubusercontent.com/ronakgh97/onnx_rs/refs/heads/master/images/sample_1.png" width="512"> | <img src="https://raw.githubusercontent.com/ronakgh97/onnx_rs/refs/heads/master/images/srgan_ort_x4.png" width="512">     |
+//! | ONNX_RS | <img src="https://raw.githubusercontent.com/ronakgh97/onnx_rs/refs/heads/master/images/sample_1.png" width="512"> | <img src="https://raw.githubusercontent.com/ronakgh97/onnx_rs/refs/heads/master/images/esrgan_onnx_rs_x4.png" width="512"> |
+//! | ORT     | <img src="https://raw.githubusercontent.com/ronakgh97/onnx_rs/refs/heads/master/images/sample_1.png" width="512"> | <img src="https://raw.githubusercontent.com/ronakgh97/onnx_rs/refs/heads/master/images/esrgan_ort_x4.png" width="512">     |
 //!
 //! ```no_run
 //! use onnx_rs::{Model, Tensor};
@@ -37,8 +37,7 @@ mod tensor;
 // public only get tensor utils and model runner, no abstraction leaking
 pub use crate::tensor::{Tensor, TensorSpec};
 
-use crate::ops::AttributesDataKind;
-pub use crate::ops::{AttributesDataValue, Operator};
+use crate::ops::{AttributesDataKind, AttributesDataValue, Operator};
 use crate::proto::{ModelProto, TensorProto, ValueInfoProto};
 use anyhow::{Result, anyhow};
 use prost::Message;

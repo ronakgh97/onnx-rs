@@ -1,4 +1,4 @@
-Minimal **onnx runtime** for running `f32 precision` models on **x86_64** CPUs ⚡
+Minimal **onnx runtime** for running `fp32 precision` models on **x86_64** CPUs ⚡
 
 Notes:
 
@@ -7,7 +7,7 @@ Notes:
 - Model parser is quite weak and complex to implement and needs to have a reasonably simple graph
 - Nothing is assumed, anything "alien" to this runtime's scope is rejected and panics instead of silently ignoring or
   assuming, which may lead to bad undesired outputs
-- Operators correctness tests are covered yet, so expect some undesired behaviors/outputs on sophisticated operators
+- Operators correctness tests are not covered yet, so expect some undesired behaviors/outputs on sophisticated operators
   used by the model
 
 > The goal is that:
