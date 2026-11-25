@@ -1,5 +1,11 @@
+# /// script
+# requires-python = ">=3.13"
+# dependencies = ["onnx"]
+# ///
+
 import sys
 import onnx
+
 input_path = sys.argv[1]
 output_path = sys.argv[2]
 model = onnx.load(input_path)

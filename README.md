@@ -15,30 +15,48 @@ Notes:
 
 Benchmarks and correctness:
 
-Running [Esrgan](https://aihub.qualcomm.com/compute/models/esrgan) 64.02 MB
+[ESRGAN]() 69.80 MB
 
-| Runtime | Time  | Input                                       | Output                                               |
-|---------|-------|---------------------------------------------|------------------------------------------------------|
-| ONNX_RS | 4.61s | <img src="images/sample_1.png" width="512"> | <img src="images/esrgan_onnx_rs_x4.png" width="512"> |
-| ORT     | 1.16s | <img src="images/sample_1.png" width="512"> | <img src="images/esrgan_ort_x4.png" width="512">     |
+| Runtime | Time  | Input                                               | Output                                                        |
+|---------|-------|-----------------------------------------------------|---------------------------------------------------------------|
+| ONNX_RS | 4.61s | <img src="images/samples/sample_1.png" width="512"> | <img src="images/upscaled/esrgan_onnx_rs_x4.png" width="512"> |
+| ORT     | 1.16s | <img src="images/samples/sample_1.png" width="512"> | <img src="images/upscaled/esrgan_ort_x4.png" width="512">     |
 
-Running [Srgan](https://aihub.qualcomm.com/compute/models/srgan) 5.92 MB
+[Real-ERSRGAN-Anime]() 17.21 MB
 
-| Runtime | Time     | Input                                       | Output                                              |
-|---------|----------|---------------------------------------------|-----------------------------------------------------|
-| ONNX_RS | 1.15s    | <img src="images/sample_2.png" width="512"> | <img src="images/srgan_onnx_rs_x4.png" width="512"> |
-| ORT     | 240.08ms | <img src="images/sample_2.png" width="512"> | <img src="images/srgan_ort_x4.png" width="512">     |
+| Runtime | Time     | Input                                               | Output                                                                   |
+|---------|----------|-----------------------------------------------------|--------------------------------------------------------------------------|
+| ONNX_RS | 1.40s    | <img src="images/samples/sample_2.png" width="512"> | <img src="images/upscaled/real_esrgan_anime_onnx_rs_x4.png" width="512"> |
+| ORT     | 550.08ms | <img src="images/samples/sample_2.png" width="512"> | <img src="images/upscaled/real_esrgan_anime_ort_x4.png" width="512">     |
 
-Running [LSDIR Compact v2](https://openmodeldb.info/models/4x-LSDIRCompact-v2) 2.42 MB
+[ClearReality-SPAN]() 1.72 MB
 
-| Runtime | Time     | Input                                       | Output                                                     |
-|---------|----------|---------------------------------------------|------------------------------------------------------------|
-| ONNX_RS | 214.54ms | <img src="images/sample_3.png" width="512"> | <img src="images/lsdircompact_onnx_rs_x4.png" width="512"> |
-| ORT     | 73.42ms  | <img src="images/sample_3.png" width="512"> | <img src="images/lsdircompact_ort_x4.png" width="512">     |
+| Runtime | Time     | Input                                               | Output                                                               |
+|---------|----------|-----------------------------------------------------|----------------------------------------------------------------------|
+| ONNX_RS | 220.54ms | <img src="images/samples/sample_3.png" width="512"> | <img src="images/upscaled/clear_reality_onnx_rs_x4.png" width="512"> |
+| ORT     | 71.60ms  | <img src="images/samples/sample_3.png" width="512"> | <img src="images/upscaled/clear_reality_ort_x4.png" width="512">     |
 
-Running [4xClearRealityV1](https://openmodeldb.info/models/4x-ClearRealityV1) 1.72 MB
+[SRGAN]() 6.92 MB
 
-| Runtime | Time     | Input                                       | Output                                                     |
-|---------|----------|---------------------------------------------|------------------------------------------------------------|
-| ONNX_RS | 200.94ms | <img src="images/sample_4.png" width="512"> | <img src="images/clearreality_onnx_rs_x4.png" width="512"> |
-| ORT     | 76.56ms  | <img src="images/sample_4.png" width="512"> | <img src="images/clearreality_ort_x4.png" width="512">     |
+| Runtime | Time     | Input                                               | Output                                                       |
+|---------|----------|-----------------------------------------------------|--------------------------------------------------------------|
+| ONNX_RS | 1.14s | <img src="images/samples/sample_4.png" width="512"> | <img src="images/upscaled/srgan_onnx_rs_x4.png" width="512"> |
+| ORT     | 335.56ms  | <img src="images/samples/sample_4.png" width="512"> | <img src="images/upscaled/srgan_ort_x4.png" width="512">     |
+
+[Upscayl-Standard]() 67.16 MB
+
+| Runtime | Time     | Input                                               | Output                                                                  |
+|---------|----------|-----------------------------------------------------|-------------------------------------------------------------------------|
+| ONNX_RS | 4.55s | <img src="images/samples/sample_5.png" width="512"> | <img src="images/upscaled/upscayl_standard_onnx_rs_x4.png" width="512"> |
+| ORT     | 1.56s  | <img src="images/samples/sample_5.png" width="512"> | <img src="images/upscaled/upscayl_standard_ort_x4.png" width="512">     |
+
+[Upscayl-High-Fidelity]() 67.16 MB
+
+| Runtime | Time     | Input                                               | Output                                                                       |
+|---------|----------|-----------------------------------------------------|------------------------------------------------------------------------------|
+| ONNX_RS | 4.54ms | <img src="images/samples/sample_6.png" width="512"> | <img src="images/upscaled/upscayl_high_fidelity_onnx_rs_x4.png" width="512"> |
+| ORT     | 1.22ms  | <img src="images/samples/sample_6.png" width="512"> | <img src="images/upscaled/upscayl_high_fidelity_ort_x4.png" width="512">     |
+
+---
+
+More **models/kernels** will be supported in the future...
