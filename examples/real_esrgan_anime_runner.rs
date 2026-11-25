@@ -22,7 +22,7 @@ fn main() -> Result<()> {
     let mut data = vec![0f32; 3 * 128 * 128];
     fill_tensor_from_image(&in_image, &mut data);
 
-    let input = Tensor::create("image.1", &[1, 3, 128, 128], data)?;
+    let input = Tensor::create("image", &[1, 3, 128, 128], data)?;
     let output = model.run_single(input)?;
     save_image_from_tensor(
         output.data(),
@@ -44,8 +44,8 @@ fn main() -> Result<()> {
     fill_tensor_from_image(&in_image, &mut data);
 
     let input = TensorRef::from_array_view(([1, 3, 128, 128], data.as_ref()))?;
-    let output = session.run(inputs!["image.1" => input])?;
-    let (_, output) = output["image"].try_extract_tensor::<f32>()?;
+    let output = session.run(inputs!["image" => input])?;
+    let (_, output) = output["output"].try_extract_tensor::<f32>()?;
     save_image_from_tensor(output, "images/upscaled/real_esrgan_anime_ort_x4.png")?;
     println!("done in : {:?}", start.elapsed());
 

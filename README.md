@@ -56,7 +56,7 @@ Benchmarks and correctness:
 
 | Runtime | Time   | Input                                               | Output                                                                       |
 |---------|--------|-----------------------------------------------------|------------------------------------------------------------------------------|
-| ONNX_RS | 4.54ms | <img src="images/samples/sample_6.png" width="512"> | <img src="images/upscaled/upscayl_high_fidelity_onnx_rs_x4.png" width="512"> |
+| ONNX_RS | 4.54s  | <img src="images/samples/sample_6.png" width="512"> | <img src="images/upscaled/upscayl_high_fidelity_onnx_rs_x4.png" width="512"> |
 | ORT     | 1.22ms | <img src="images/samples/sample_6.png" width="512"> | <img src="images/upscaled/upscayl_high_fidelity_ort_x4.png" width="512">     |
 
 ---
