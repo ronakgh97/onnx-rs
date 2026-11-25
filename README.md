@@ -15,47 +15,49 @@ Notes:
 
 Benchmarks and correctness:
 
-[ESRGAN]() 69.80 MB
+[ESRGAN](https://aihub.qualcomm.com/compute/models/esrgan) 69.80 MB
 
 | Runtime | Time  | Input                                               | Output                                                        |
 |---------|-------|-----------------------------------------------------|---------------------------------------------------------------|
 | ONNX_RS | 4.61s | <img src="images/samples/sample_1.png" width="512"> | <img src="images/upscaled/esrgan_onnx_rs_x4.png" width="512"> |
 | ORT     | 1.16s | <img src="images/samples/sample_1.png" width="512"> | <img src="images/upscaled/esrgan_ort_x4.png" width="512">     |
 
-[Real-ERSRGAN-Anime]() 17.21 MB
+[Real-ERSRGAN-Anime](https://huggingface.co/deepghs/imgutils-models/blob/main/real_esrgan/RealESRGAN_x4plus_anime_6B.onnx)
+17.21 MB
 
 | Runtime | Time     | Input                                               | Output                                                                   |
 |---------|----------|-----------------------------------------------------|--------------------------------------------------------------------------|
 | ONNX_RS | 1.40s    | <img src="images/samples/sample_2.png" width="512"> | <img src="images/upscaled/real_esrgan_anime_onnx_rs_x4.png" width="512"> |
 | ORT     | 550.08ms | <img src="images/samples/sample_2.png" width="512"> | <img src="images/upscaled/real_esrgan_anime_ort_x4.png" width="512">     |
 
-[ClearReality-SPAN]() 1.72 MB
+[ClearReality-SPAN](https://huggingface.co/huggingworld/onnx-image-models/blob/main/4x-ClearRealityV1.onnx) 1.72 MB
 
 | Runtime | Time     | Input                                               | Output                                                               |
 |---------|----------|-----------------------------------------------------|----------------------------------------------------------------------|
 | ONNX_RS | 220.54ms | <img src="images/samples/sample_3.png" width="512"> | <img src="images/upscaled/clear_reality_onnx_rs_x4.png" width="512"> |
 | ORT     | 71.60ms  | <img src="images/samples/sample_3.png" width="512"> | <img src="images/upscaled/clear_reality_ort_x4.png" width="512">     |
 
-[SRGAN]() 6.92 MB
+[SRGAN](https://aihub.qualcomm.com/compute/models/srgan) 6.92 MB
 
 | Runtime | Time     | Input                                               | Output                                                       |
 |---------|----------|-----------------------------------------------------|--------------------------------------------------------------|
-| ONNX_RS | 1.14s | <img src="images/samples/sample_4.png" width="512"> | <img src="images/upscaled/srgan_onnx_rs_x4.png" width="512"> |
-| ORT     | 335.56ms  | <img src="images/samples/sample_4.png" width="512"> | <img src="images/upscaled/srgan_ort_x4.png" width="512">     |
+| ONNX_RS | 1.14s    | <img src="images/samples/sample_4.png" width="512"> | <img src="images/upscaled/srgan_onnx_rs_x4.png" width="512"> |
+| ORT     | 335.56ms | <img src="images/samples/sample_4.png" width="512"> | <img src="images/upscaled/srgan_ort_x4.png" width="512">     |
 
-[Upscayl-Standard]() 67.16 MB
+[Upscayl-Standard](https://huggingface.co/huggingworld/onnx-image-models/blob/main/upscayl-standard-4x.onnx) 67.16 MB
 
-| Runtime | Time     | Input                                               | Output                                                                  |
-|---------|----------|-----------------------------------------------------|-------------------------------------------------------------------------|
+| Runtime | Time  | Input                                               | Output                                                                  |
+|---------|-------|-----------------------------------------------------|-------------------------------------------------------------------------|
 | ONNX_RS | 4.55s | <img src="images/samples/sample_5.png" width="512"> | <img src="images/upscaled/upscayl_standard_onnx_rs_x4.png" width="512"> |
-| ORT     | 1.56s  | <img src="images/samples/sample_5.png" width="512"> | <img src="images/upscaled/upscayl_standard_ort_x4.png" width="512">     |
+| ORT     | 1.56s | <img src="images/samples/sample_5.png" width="512"> | <img src="images/upscaled/upscayl_standard_ort_x4.png" width="512">     |
 
-[Upscayl-High-Fidelity]() 67.16 MB
+[Upscayl-High-Fidelity](https://huggingface.co/huggingworld/onnx-image-models/blob/main/upscayl-high-fidelity-4x.onnx)
+67.16 MB
 
-| Runtime | Time     | Input                                               | Output                                                                       |
-|---------|----------|-----------------------------------------------------|------------------------------------------------------------------------------|
+| Runtime | Time   | Input                                               | Output                                                                       |
+|---------|--------|-----------------------------------------------------|------------------------------------------------------------------------------|
 | ONNX_RS | 4.54ms | <img src="images/samples/sample_6.png" width="512"> | <img src="images/upscaled/upscayl_high_fidelity_onnx_rs_x4.png" width="512"> |
-| ORT     | 1.22ms  | <img src="images/samples/sample_6.png" width="512"> | <img src="images/upscaled/upscayl_high_fidelity_ort_x4.png" width="512">     |
+| ORT     | 1.22ms | <img src="images/samples/sample_6.png" width="512"> | <img src="images/upscaled/upscayl_high_fidelity_ort_x4.png" width="512">     |
 
 ---
 
