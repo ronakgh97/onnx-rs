@@ -153,53 +153,46 @@ fn relu(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
         return Tensor::create(output, x.dims.as_slice(), data);
     }
 
-    if data.len() >= 8 {
-        // simd path
-        unsafe {
-            let zero = _mm256_setzero_ps();
+    unsafe {
+        let zero = _mm256_setzero_ps();
 
-            // unroll by 4 ymm per iteration so the scheduler has
-            // four independent `maxps` chains to overlap
-            let (input_chunk32, input_rem32) = x.data.as_chunks::<32>();
-            let (output_chunk32, output_rem32) = data.as_chunks_mut::<32>();
+        // unroll by 4 ymm per iteration so the scheduler has
+        // four independent `maxps` chains to overlap
+        let (input_chunk32, input_rem32) = x.data.as_chunks::<32>();
+        let (output_chunk32, output_rem32) = data.as_chunks_mut::<32>();
 
-            for (input, output) in input_chunk32.iter().zip(output_chunk32.iter_mut()) {
-                let v0 = _mm256_loadu_ps(input.as_ptr());
-                let v1 = _mm256_loadu_ps(input.as_ptr().add(8));
-                let v2 = _mm256_loadu_ps(input.as_ptr().add(16));
-                let v3 = _mm256_loadu_ps(input.as_ptr().add(24));
+        for (input, output) in input_chunk32.iter().zip(output_chunk32.iter_mut()) {
+            let v0 = _mm256_loadu_ps(input.as_ptr());
+            let v1 = _mm256_loadu_ps(input.as_ptr().add(8));
+            let v2 = _mm256_loadu_ps(input.as_ptr().add(16));
+            let v3 = _mm256_loadu_ps(input.as_ptr().add(24));
 
-                let v0 = _mm256_max_ps(v0, zero);
-                let v1 = _mm256_max_ps(v1, zero);
-                let v2 = _mm256_max_ps(v2, zero);
-                let v3 = _mm256_max_ps(v3, zero);
+            let v0 = _mm256_max_ps(v0, zero);
+            let v1 = _mm256_max_ps(v1, zero);
+            let v2 = _mm256_max_ps(v2, zero);
+            let v3 = _mm256_max_ps(v3, zero);
 
-                _mm256_storeu_ps(output.as_mut_ptr(), v0);
-                _mm256_storeu_ps(output.as_mut_ptr().add(8), v1);
-                _mm256_storeu_ps(output.as_mut_ptr().add(16), v2);
-                _mm256_storeu_ps(output.as_mut_ptr().add(24), v3);
-            }
-
-            // simd tail (< 32 floats)
-            let (input_chunk8, input_rem8) = input_rem32.as_chunks::<8>();
-            let (output_chunk8, output_rem8) = output_rem32.as_chunks_mut::<8>();
-            for (input, output) in input_chunk8.iter().zip(output_chunk8.iter_mut()) {
-                let v = _mm256_loadu_ps(input.as_ptr());
-                let result = _mm256_max_ps(v, zero);
-                _mm256_storeu_ps(output.as_mut_ptr(), result);
-            }
-
-            // scalar (< 8 floats)
-            for (input, output) in input_rem8.iter().zip(output_rem8.iter_mut()) {
-                *output = input.max(0.0);
-            }
+            _mm256_storeu_ps(output.as_mut_ptr(), v0);
+            _mm256_storeu_ps(output.as_mut_ptr().add(8), v1);
+            _mm256_storeu_ps(output.as_mut_ptr().add(16), v2);
+            _mm256_storeu_ps(output.as_mut_ptr().add(24), v3);
         }
-    } else {
-        // scalar path
-        for (&v, out) in x.data.iter().zip(data.iter_mut()) {
-            *out = v.max(0.0);
+
+        // simd tail (< 32 floats)
+        let (input_chunk8, input_rem8) = input_rem32.as_chunks::<8>();
+        let (output_chunk8, output_rem8) = output_rem32.as_chunks_mut::<8>();
+        for (input, output) in input_chunk8.iter().zip(output_chunk8.iter_mut()) {
+            let v = _mm256_loadu_ps(input.as_ptr());
+            let result = _mm256_max_ps(v, zero);
+            _mm256_storeu_ps(output.as_mut_ptr(), result);
+        }
+
+        // scalar (< 8 floats)
+        for (input, output) in input_rem8.iter().zip(output_rem8.iter_mut()) {
+            *output = input.max(0.0);
         }
     }
+
     Tensor::create(output, x.dims.as_slice(), data)
 }
 
@@ -218,7 +211,7 @@ fn leaky_relu(
     // f(x) = alpha * x for x < 0, x otherwise
     let n = x.data.len();
     if n == 0 {
-        return Tensor::create(output, x.dims.as_slice(), Vec::new());
+        return Tensor::create(output, x.dims.as_slice(), vec![]);
     }
 
     let mut data: Vec<f32> = Vec::with_capacity(n);
@@ -326,6 +319,7 @@ fn prelu(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
         let mut data: Vec<f32> = Vec::with_capacity(data_len);
         let dst_ptr = data.spare_capacity_mut().as_mut_ptr() as *mut f32;
         let src_ptr = x.data.as_ptr();
+
         unsafe {
             let mut i = 0;
             let zero = _mm256_setzero_ps();
@@ -363,6 +357,7 @@ fn prelu(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
             }
             data.set_len(data_len);
         }
+
         return Tensor::create(output, x.dims.as_slice(), data);
     }
 
@@ -1456,6 +1451,7 @@ fn tanh(output: &str, inputs: &[Option<&Tensor>]) -> Result<Tensor> {
         let one = _mm256_set1_ps(1.0);
         let pos20 = _mm256_set1_ps(20.0);
         let neg20 = _mm256_set1_ps(-20.0);
+
         // clamp |x| <= 20 so 2x can't overflow exp, tanh saturates at |x| ~ 20 in f32
         // NaN lanes are preserved so NaN input still yields NaN output
         let clamp = |v: __m256| {
@@ -1612,7 +1608,38 @@ fn concat(
     }
     let axis = axis as usize;
 
-    // TODO: Fast path for axis=1 here
+    // fast path for axis 1, which is the common case for NCHW tensors,
+    // where we can copy contiguous blocks
+    if axis == 1 && rank == 4 {
+        let first_dims = &first.dims;
+        let (n, h, w) = (
+            first_dims[0] as usize,
+            first_dims[2] as usize,
+            first_dims[3] as usize,
+        );
+        let hw = h * w;
+        let cout: i64 = tensors.iter().map(|t| t.dims[1]).sum();
+
+        // all inputs must match N/H/W outside the concat axis
+        let uniform = tensors.iter().all(|t| {
+            t.dims[0] == first_dims[0] && t.dims[2] == first_dims[2] && t.dims[3] == first_dims[3]
+        });
+        if uniform {
+            let total = n * cout as usize * hw;
+            let mut data = Vec::with_capacity(total);
+            for i in 0..n {
+                for t in tensors.iter() {
+                    let c = t.dims[1] as usize;
+                    data.extend_from_slice(&t.data[i * c * hw..(i + 1) * c * hw]);
+                }
+            }
+            return Tensor::create(
+                output,
+                &[first_dims[0], cout, first_dims[2], first_dims[3]],
+                data,
+            );
+        }
+    }
 
     // every input must have the same rank, and matching dims outside 'axis'
     let mut axis_total: i64 = 0;
@@ -1867,6 +1894,7 @@ fn resize(
         ));
     }
 
+    // TODO: Add support when Tensor INT64 is implemented
     // input 3 (sizes) is an i64 tensor, which the runtime cannot hold/support yet
     if inputs.get(3).copied().flatten().is_some() {
         return Err(anyhow!(

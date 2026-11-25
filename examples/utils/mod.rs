@@ -27,9 +27,9 @@ pub fn save_image_from_tensor(data: &[f32], filename: &str) -> anyhow::Result<()
             let b = data[2 * plane + index];
 
             let pixel = image::Rgb([
-                (r.clamp(0.0, 1.0) * 255.0).round() as u8,
-                (g.clamp(0.0, 1.0) * 255.0).round() as u8,
-                (b.clamp(0.0, 1.0) * 255.0).round() as u8,
+                (r.clamp(0.0, 1.0).algebraic_mul(255.0)).round() as u8,
+                (g.clamp(0.0, 1.0).algebraic_mul(255.0)).round() as u8,
+                (b.clamp(0.0, 1.0).algebraic_mul(255.0)).round() as u8,
             ]);
             out_image.put_pixel(x as u32, y as u32, pixel);
         }

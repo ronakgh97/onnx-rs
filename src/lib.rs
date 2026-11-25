@@ -15,8 +15,8 @@
 //!
 //! | Runtime | Input | Output |
 //! |---------|-------|--------|
-//! | ONNX_RS | <img src="https://raw.githubusercontent.com/ronakgh97/onnx_rs/refs/heads/master/images/sample_1.png" width="512"> | <img src="https://raw.githubusercontent.com/ronakgh97/onnx_rs/refs/heads/master/images/esrgan_onnx_rs_x4.png" width="512"> |
-//! | ORT     | <img src="https://raw.githubusercontent.com/ronakgh97/onnx_rs/refs/heads/master/images/sample_1.png" width="512"> | <img src="https://raw.githubusercontent.com/ronakgh97/onnx_rs/refs/heads/master/images/esrgan_ort_x4.png" width="512">     |
+//! | ONNX_RS | <img src="https://raw.githubusercontent.com/ronakgh97/onnx_rs/refs/heads/master/images/samples/sample_1.png" width="512"> | <img src="https://raw.githubusercontent.com/ronakgh97/onnx_rs/refs/heads/master/images/upscaled/esrgan_onnx_rs_x4.png" width="512"> |
+//! | ORT     | <img src="https://raw.githubusercontent.com/ronakgh97/onnx_rs/refs/heads/master/images/samples/sample_1.png" width="512"> | <img src="https://raw.githubusercontent.com/ronakgh97/onnx_rs/refs/heads/master/images/upscaled/esrgan_ort_x4.png" width="512">     |
 //!
 //! ```no_run
 //! use onnx_rs::{Model, Tensor};

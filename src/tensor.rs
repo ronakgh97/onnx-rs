@@ -10,6 +10,13 @@ pub struct Tensor {
     pub(crate) data: Arc<Vec<f32>>,
 }
 
+// /// Tensor dtype enum for fp32 and int64
+// #[derive(Clone, Debug)]
+// pub(crate) enum TensorType {
+//     FLOAT32(Vec<f32>),
+//     INT64(Vec<i64>),
+// }
+
 /// Tensor specification with name and shape
 #[derive(Clone, Debug)]
 pub struct TensorSpec {
